@@ -30,24 +30,29 @@ export async function buscarDireccion(query: string): Promise<ResultadoBusqueda[
       {
         headers: {
           'Accept-Language': 'es',
-          'User-Agent': 'TaxiAppIxtlahuaca/1.0',
+          'User-Agent': 'TaxiApp-Ixtlahuaca-App/1.1 (contact: admin@taxiapp.com)',
         },
       }
     );
 
-    if (!response.ok) return [];
+    if (!response.ok) {
+      console.warn('Respuesta de geocodificación no OK:', response.status);
+      return [];
+    }
 
     const data = await response.json();
 
-    return data.map((item: { place_id: number; display_name: string; lat: string; lon: string; address?: { road?: string; suburb?: string; city?: string } }) => ({
+    if (!Array.isArray(data)) return [];
+
+    return data.map((item: any) => ({
       id: String(item.place_id),
       nombre: item.display_name.split(',')[0],
       direccion: item.display_name,
       lat: parseFloat(item.lat),
       lng: parseFloat(item.lon),
     }));
-  } catch {
-    console.error('Error buscando dirección');
+  } catch (error) {
+    console.error('Error crítico buscando dirección:', error);
     return [];
   }
 }
@@ -67,7 +72,7 @@ export async function obtenerDireccion(lat: number, lng: number): Promise<string
       {
         headers: {
           'Accept-Language': 'es',
-          'User-Agent': 'TaxiAppIxtlahuaca/1.0',
+          'User-Agent': 'TaxiApp-Ixtlahuaca-App/1.1 (contact: admin@taxiapp.com)',
         },
       }
     );

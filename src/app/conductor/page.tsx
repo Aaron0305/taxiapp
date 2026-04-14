@@ -106,11 +106,15 @@ export default function ConductorPanel() {
     if (estado === 'offline' || !userLocation || !userId) return;
 
     const interval = setInterval(async () => {
+      // PostGIS requiere formato POINT(longitud latitud)
+      const point = `POINT(${userLocation[1]} ${userLocation[0]})`;
+
       await supabase.from('conductores').update({
         esta_disponible: estado === 'online',
         ultima_conexion: new Date().toISOString(),
+        ubicacion_actual: point,
       }).eq('id', userId);
-    }, 10000); // every 10 seconds
+    }, 5000); // Intervalo de 5 segundos
 
     return () => clearInterval(interval);
   }, [estado, userLocation, userId]);
@@ -366,11 +370,10 @@ export default function ConductorPanel() {
           <div className="pointer-events-auto w-full flex justify-center">
             <button
               onClick={toggleOnline}
-              className={`w-44 h-44 rounded-full flex flex-col items-center justify-center font-bold text-lg shadow-2xl transition-all duration-500 ${
-                estado === 'online'
+              className={`w-44 h-44 rounded-full flex flex-col items-center justify-center font-bold text-lg shadow-2xl transition-all duration-500 ${estado === 'online'
                   ? 'bg-gradient-to-b from-red-500 to-red-600 shadow-[0_0_50px_rgba(239,68,68,0.5)] border-4 border-red-400/30 text-white'
                   : 'bg-gradient-to-b from-emerald-500 to-teal-500 shadow-[0_0_50px_rgba(16,185,129,0.3)] border-4 border-emerald-400/30 text-white'
-              }`}
+                }`}
             >
               <span className="text-3xl mb-1">{estado === 'online' ? '🔴' : '🟢'}</span>
               <span>{estado === 'online' ? 'DESCONECTAR' : 'CONECTAR'}</span>

@@ -13,6 +13,7 @@ import {
   type ViajeDB,
 } from '@/services/api/viajeService';
 import { buscarDireccion, obtenerDireccion, type ResultadoBusqueda } from '@/services/mapas/geocodificacion';
+import { suscribirseAUbicacionConductor } from '@/services/socket/websocketService';
 
 // Dynamic import Leaflet (avoid SSR issues)
 const MapaLeaflet = dynamic(() => import('@/components/comun/MapaLeaflet'), { ssr: false });
@@ -39,6 +40,7 @@ export default function PasajeroPanel() {
   // Trip
   const [precioEstimado, setPrecioEstimado] = useState(0);
   const [viajeActivo, setViajeActivo] = useState<ViajeDB | null>(null);
+  const [conductorLocation, setConductorLocation] = useState<[number, number] | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   // Map markers
@@ -122,6 +124,19 @@ export default function PasajeroPanel() {
     return () => navigator.geolocation.clearWatch(watchId);
   }, []);
 
+  // === Actualizar última conexión del pasajero ===
+  useEffect(() => {
+    if (!userId) return;
+
+    const interval = setInterval(async () => {
+      await supabase.from('usuarios').update({
+        actualizado_en: new Date().toISOString(),
+      }).eq('id', userId);
+    }, 15000); // Cada 15 segundos para marcar actividad
+
+    return () => clearInterval(interval);
+  }, [userId]);
+
   // === Suscripción Realtime al viaje activo ===
   useEffect(() => {
     if (!viajeActivo) return;
@@ -135,15 +150,39 @@ export default function PasajeroPanel() {
           setPaso('inicio');
           setViajeActivo(null);
           setDestinoSeleccionado(null);
+          setConductorLocation(null);
         }, 5000);
       } else if (viajeActualizado.estado === 'cancelado') {
         setPaso('inicio');
         setViajeActivo(null);
+        setConductorLocation(null);
       }
     });
 
-    return () => { supabase.removeChannel(channel); };
-  }, [viajeActivo?.id]);
+    // Suscribirse a la ubicación del conductor si el viaje está activo
+    let gpsChannel: any = null;
+    if (viajeActivo.conductor_id && (viajeActivo.estado === 'aceptado' || viajeActivo.estado === 'en_curso')) {
+      gpsChannel = suscribirseAUbicacionConductor(viajeActivo.conductor_id, (payload: any) => {
+        if (payload.ubicacion_actual) {
+          // Parsear POINT(lng lat) o usar GeoJSON
+          // Dependiendo de cómo lo devuelva Supabase Realtime
+          console.log('GPS Conductor recibido:', payload.ubicacion_actual);
+          // Un hack simple si viene como string:
+          if (typeof payload.ubicacion_actual === 'string') {
+             const coords = payload.ubicacion_actual.replace('POINT(', '').replace(')', '').split(' ');
+             setConductorLocation([parseFloat(coords[1]), parseFloat(coords[0])]);
+          } else if (payload.ubicacion_actual.coordinates) {
+             setConductorLocation([payload.ubicacion_actual.coordinates[1], payload.ubicacion_actual.coordinates[0]]);
+          }
+        }
+      });
+    }
+
+    return () => { 
+      supabase.removeChannel(channel); 
+      if (gpsChannel) supabase.removeChannel(gpsChannel);
+    };
+  }, [viajeActivo?.id, viajeActivo?.conductor_id, viajeActivo?.estado]);
 
   // === Buscar destinos con debounce ===
   useEffect(() => {
@@ -170,13 +209,38 @@ export default function PasajeroPanel() {
         label: destinoSeleccionado.nombre,
       });
     }
-    if (viajeActivo?.conductor_id) {
-      // If we had conductor position we'd add it here
+    if (conductorLocation) {
+      marks.push({
+        id: 'conductor',
+        lat: conductorLocation[0],
+        lng: conductorLocation[1],
+        tipo: 'conductor',
+        label: 'Tu Taxi en camino',
+      });
     }
     setMarcadores(marks);
-  }, [destinoSeleccionado, viajeActivo]);
+  }, [destinoSeleccionado, viajeActivo, conductorLocation]);
 
   // === Acciones ===
+  const manejarClickMapa = useCallback(async (lat: number, lng: number) => {
+    // Solo permitir cambiar ubicación si estamos en el paso de inicio o confirmación
+    if (paso === 'inicio' || paso === 'confirmar' || paso === 'buscando_destino') {
+      const coords: [number, number] = [lat, lng];
+      setUserLocation(coords);
+      const dir = await obtenerDireccion(lat, lng);
+      setOrigenDireccion(dir.split(',').slice(0, 2).join(','));
+      
+      // Si ya teníamos destino, recalcular precio
+      if (destinoSeleccionado) {
+        const precio = calcularPrecioEstimado(
+          { lat, lng },
+          { lat: destinoSeleccionado.lat, lng: destinoSeleccionado.lng }
+        );
+        setPrecioEstimado(precio);
+      }
+    }
+  }, [paso, destinoSeleccionado]);
+
   const seleccionarDestino = useCallback((resultado: ResultadoBusqueda) => {
     setDestinoSeleccionado(resultado);
     setQueryDestino(resultado.nombre);
@@ -191,6 +255,12 @@ export default function PasajeroPanel() {
       setPrecioEstimado(precio);
     }
   }, [userLocation]);
+
+  const forzarIxtlahuaca = () => {
+    const coords: [number, number] = [19.568, -99.768];
+    setUserLocation(coords);
+    setOrigenDireccion('Centro, Ixtlahuaca');
+  };
 
   const pedirTaxi = useCallback(async () => {
     if (!userLocation || !destinoSeleccionado || !userId) return;
@@ -247,8 +317,23 @@ export default function PasajeroPanel() {
           darkMode={true}
           userLocation={userLocation}
           marcadores={marcadores}
+          onMapClick={manejarClickMapa}
         />
       </div>
+
+      {/* BOTÓN FLOTANTE PARA CORREGIR GPS */}
+      {paso === 'inicio' && (
+        <button 
+          onClick={forzarIxtlahuaca}
+          className="absolute right-6 bottom-72 z-20 p-4 bg-white/10 backdrop-blur-3xl border border-white/20 rounded-full text-blue-400 shadow-2xl hover:bg-blue-500/20 transition-all pointer-events-auto group"
+          title="Corregir ubicación a Ixtlahuaca"
+        >
+          <svg className="w-6 h-6 group-hover:rotate-45 transition-transform" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z" />
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 11a3 3 0 11-6 0 3 3 0 016 0z" />
+          </svg>
+        </button>
+      )}
 
       {/* HEADER */}
       <header className="relative z-10 p-4 flex justify-between items-center">
@@ -283,9 +368,11 @@ export default function PasajeroPanel() {
               <input
                 type="text"
                 value={origenDireccion}
-                readOnly
-                className="w-full bg-white/5 border border-white/10 text-gray-400 rounded-xl py-3 pl-11 pr-4 text-sm"
+                onChange={(e) => setOrigenDireccion(e.target.value)}
+                placeholder="Tu ubicación (o toca el mapa)"
+                className="w-full bg-white/5 border border-white/10 text-white rounded-xl py-3 pl-11 pr-4 text-sm focus:ring-1 focus:ring-emerald-500 transition-all"
               />
+              <span className="absolute right-4 top-1/2 -translate-y-1/2 text-[10px] text-gray-500 italic">GPS</span>
             </div>
 
             <div className="relative mb-4">

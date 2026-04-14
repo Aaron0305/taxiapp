@@ -47,6 +47,9 @@ export async function crearViaje(params: {
       origen_lng: params.origen.lng,
       destino_lat: params.destino.lat,
       destino_lng: params.destino.lng,
+      // Usar formato GeoJSON para columnas PostGIS
+      origen: { type: 'Point', coordinates: [params.origen.lng, params.origen.lat] },
+      destino: { type: 'Point', coordinates: [params.destino.lng, params.destino.lat] },
       precio_estimado: params.precio_estimado,
     })
     .select()
