@@ -1,4 +1,4 @@
-import { supabase } from '@/backend/config/database';
+import { supabaseServer as supabase } from '@/backend/config/databaseServer';
 import { TABLA_CONDUCTORES } from '@/backend/models/Conductor';
 import type { Conductor } from '@/types/conductor';
 

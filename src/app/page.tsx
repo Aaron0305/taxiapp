@@ -1,17 +1,17 @@
 'use client';
 
 import { useEffect } from 'react';
-import { supabase } from '@/backend/config/database';
 import { useRouter } from 'next/navigation';
+import { obtenerSesionSegura, obtenerUsuarioSeguro } from '@/services/auth/sessionSafe';
 
 export default function HomePage() {
   const router = useRouter();
 
   useEffect(() => {
     const checkSession = async () => {
-      const { data: { session } } = await supabase.auth.getSession();
+      const { session } = await obtenerSesionSegura();
       if (session) {
-        const { data: { user } } = await supabase.auth.getUser();
+        const { user } = await obtenerUsuarioSeguro();
         const rol = user?.user_metadata?.rol || 'pasajero';
         router.push(`/${rol}`);
       } else {

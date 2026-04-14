@@ -14,11 +14,37 @@ import {
 } from '@/services/api/viajeService';
 import { buscarDireccion, obtenerDireccion, type ResultadoBusqueda } from '@/services/mapas/geocodificacion';
 import { suscribirseAUbicacionConductor } from '@/services/socket/websocketService';
+import { obtenerSesionSegura, obtenerUsuarioSeguro } from '@/services/auth/sessionSafe';
 
 // Dynamic import Leaflet (avoid SSR issues)
 const MapaLeaflet = dynamic(() => import('@/components/comun/MapaLeaflet'), { ssr: false });
 
 type Paso = 'inicio' | 'buscando_destino' | 'confirmar' | 'esperando' | 'viaje_activo' | 'completado';
+
+const IXTLAHUACA_CENTER: [number, number] = [19.568, -99.768];
+
+function distanciaKm(aLat: number, aLng: number, bLat: number, bLng: number) {
+  const R = 6371;
+  const dLat = (bLat - aLat) * (Math.PI / 180);
+  const dLng = (bLng - aLng) * (Math.PI / 180);
+  const aa =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos(aLat * (Math.PI / 180)) *
+      Math.cos(bLat * (Math.PI / 180)) *
+      Math.sin(dLng / 2) *
+      Math.sin(dLng / 2);
+  const c = 2 * Math.atan2(Math.sqrt(aa), Math.sqrt(1 - aa));
+  return R * c;
+}
+
+function normalizarUbicacion(lat: number, lng: number, accuracy?: number | null): [number, number] {
+  const precision = accuracy ?? 0;
+  const lejosDeZona = distanciaKm(lat, lng, IXTLAHUACA_CENTER[0], IXTLAHUACA_CENTER[1]) > 35;
+  if (lejosDeZona || precision > 2500) {
+    return IXTLAHUACA_CENTER;
+  }
+  return [lat, lng];
+}
 
 export default function PasajeroPanel() {
   const router = useRouter();
@@ -47,14 +73,15 @@ export default function PasajeroPanel() {
   const [marcadores, setMarcadores] = useState<Array<{ id: string; lat: number; lng: number; tipo: 'usuario' | 'destino' | 'conductor'; label?: string }>>([]);
 
   const searchTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const searchRequestIdRef = useRef(0);
 
   // === Auth & Session ===
   useEffect(() => {
     const iniciar = async () => {
-      const { data: { session } } = await supabase.auth.getSession();
+      const { session } = await obtenerSesionSegura();
       if (!session) { router.push('/auth/login'); return; }
 
-      const { data: { user } } = await supabase.auth.getUser();
+      const { user } = await obtenerUsuarioSeguro();
       if (user?.user_metadata?.nombre) setNombreUsuario(user.user_metadata.nombre);
       setUserId(user?.id || '');
 
@@ -77,7 +104,7 @@ export default function PasajeroPanel() {
   useEffect(() => {
     if (!navigator.geolocation) {
       console.warn('Geolocation not supported');
-      setUserLocation([19.568, -99.768]);
+      setUserLocation(IXTLAHUACA_CENTER);
       return;
     }
 
@@ -86,7 +113,7 @@ export default function PasajeroPanel() {
     // 1. Intentar obtener posición inmediata
     navigator.geolocation.getCurrentPosition(
       async (pos) => {
-        const coords: [number, number] = [pos.coords.latitude, pos.coords.longitude];
+        const coords = normalizarUbicacion(pos.coords.latitude, pos.coords.longitude, pos.coords.accuracy);
         setUserLocation(coords);
         ubicacionObtenida = true;
         try {
@@ -97,7 +124,7 @@ export default function PasajeroPanel() {
       (err) => {
         console.warn('GPS getCurrentPosition error:', err.message);
         if (!ubicacionObtenida) {
-          setUserLocation([19.568, -99.768]);
+          setUserLocation(IXTLAHUACA_CENTER);
           setOrigenDireccion('Ixtlahuaca, México');
         }
       },
@@ -107,7 +134,7 @@ export default function PasajeroPanel() {
     // 2. Seguir observando cambios de posición
     const watchId = navigator.geolocation.watchPosition(
       async (pos) => {
-        const coords: [number, number] = [pos.coords.latitude, pos.coords.longitude];
+        const coords = normalizarUbicacion(pos.coords.latitude, pos.coords.longitude, pos.coords.accuracy);
         setUserLocation(coords);
         ubicacionObtenida = true;
         if (origenDireccion === 'Mi ubicación' || origenDireccion === 'Ixtlahuaca, México') {
@@ -187,14 +214,24 @@ export default function PasajeroPanel() {
   // === Buscar destinos con debounce ===
   useEffect(() => {
     if (searchTimeoutRef.current) clearTimeout(searchTimeoutRef.current);
-    if (queryDestino.length < 3) { setResultados([]); return; }
+    if (queryDestino.trim().length < 3) {
+      setResultados([]);
+      setBuscando(false);
+      return;
+    }
 
+    const requestId = ++searchRequestIdRef.current;
     setBuscando(true);
     searchTimeoutRef.current = setTimeout(async () => {
       const res = await buscarDireccion(queryDestino);
+      if (requestId !== searchRequestIdRef.current) return;
       setResultados(res);
       setBuscando(false);
     }, 500);
+
+    return () => {
+      if (searchTimeoutRef.current) clearTimeout(searchTimeoutRef.current);
+    };
   }, [queryDestino]);
 
   // === Update map markers ===
@@ -388,7 +425,7 @@ export default function PasajeroPanel() {
             </div>
 
             {/* Accesos rápidos */}
-            <div className="flex gap-3">
+            <div className="flex flex-wrap gap-3">
               <button
                 onClick={() => { setQueryDestino('Centro Ixtlahuaca'); setPaso('buscando_destino'); }}
                 className="flex items-center gap-2 bg-white/5 hover:bg-white/10 border border-white/5 px-4 py-2.5 rounded-xl transition-all"

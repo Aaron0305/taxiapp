@@ -3,6 +3,7 @@
 import { useState, useEffect } from 'react';
 import { supabase } from '@/backend/config/database';
 import { useRouter } from 'next/navigation';
+import { obtenerSesionSegura, obtenerUsuarioSeguro } from '@/services/auth/sessionSafe';
 
 export default function LoginPage() {
   const router = useRouter();
@@ -32,9 +33,9 @@ export default function LoginPage() {
 
   useEffect(() => {
     const verificarSesion = async () => {
-      const { data: { session } } = await supabase.auth.getSession();
+      const { session } = await obtenerSesionSegura();
       if (session) {
-        const { data: { user } } = await supabase.auth.getUser();
+        const { user } = await obtenerUsuarioSeguro();
         const userRol = user?.user_metadata?.rol || 'pasajero';
         router.push(`/${userRol}`);
       }

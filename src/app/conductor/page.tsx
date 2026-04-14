@@ -8,14 +8,41 @@ import {
   aceptarViaje,
   completarViaje,
   obtenerViajeActivoConductor,
+  obtenerViajesSolicitados,
   obtenerMetricasConductorHoy,
   suscribirseViajesSolicitados,
   type ViajeDB,
 } from '@/services/api/viajeService';
+import { obtenerSesionSegura, obtenerUsuarioSeguro } from '@/services/auth/sessionSafe';
 
 const MapaLeaflet = dynamic(() => import('@/components/comun/MapaLeaflet'), { ssr: false });
 
 type EstadoConductor = 'offline' | 'online' | 'viaje_aceptado' | 'viaje_en_curso';
+
+const IXTLAHUACA_CENTER: [number, number] = [19.568, -99.768];
+
+function distanciaKm(aLat: number, aLng: number, bLat: number, bLng: number) {
+  const R = 6371;
+  const dLat = (bLat - aLat) * (Math.PI / 180);
+  const dLng = (bLng - aLng) * (Math.PI / 180);
+  const aa =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos(aLat * (Math.PI / 180)) *
+      Math.cos(bLat * (Math.PI / 180)) *
+      Math.sin(dLng / 2) *
+      Math.sin(dLng / 2);
+  const c = 2 * Math.atan2(Math.sqrt(aa), Math.sqrt(1 - aa));
+  return R * c;
+}
+
+function normalizarUbicacion(lat: number, lng: number, accuracy?: number | null): [number, number] {
+  const precision = accuracy ?? 0;
+  const lejosDeZona = distanciaKm(lat, lng, IXTLAHUACA_CENTER[0], IXTLAHUACA_CENTER[1]) > 35;
+  if (lejosDeZona || precision > 2500) {
+    return IXTLAHUACA_CENTER;
+  }
+  return [lat, lng];
+}
 
 export default function ConductorPanel() {
   const router = useRouter();
@@ -28,7 +55,7 @@ export default function ConductorPanel() {
   const [userLocation, setUserLocation] = useState<[number, number] | null>(null);
 
   // Trips
-  const [solicitudPendiente, setSolicitudPendiente] = useState<ViajeDB | null>(null);
+  const [solicitudesDisponibles, setSolicitudesDisponibles] = useState<ViajeDB[]>([]);
   const [viajeActivo, setViajeActivo] = useState<ViajeDB | null>(null);
 
   // Metrics
@@ -41,10 +68,10 @@ export default function ConductorPanel() {
   // === Auth & Session ===
   useEffect(() => {
     const iniciar = async () => {
-      const { data: { session } } = await supabase.auth.getSession();
+      const { session } = await obtenerSesionSegura();
       if (!session) { router.push('/auth/login'); return; }
 
-      const { data: { user } } = await supabase.auth.getUser();
+      const { user } = await obtenerUsuarioSeguro();
       if (user?.user_metadata?.nombre) setNombreUsuario(user.user_metadata.nombre);
       setUserId(user?.id || '');
 
@@ -80,20 +107,20 @@ export default function ConductorPanel() {
   // === GPS conductor — obtener ubicación real ===
   useEffect(() => {
     if (!navigator.geolocation) {
-      setUserLocation([19.568, -99.768]);
+      setUserLocation(IXTLAHUACA_CENTER);
       return;
     }
 
     // Posición inmediata
     navigator.geolocation.getCurrentPosition(
-      (pos) => setUserLocation([pos.coords.latitude, pos.coords.longitude]),
-      () => setUserLocation([19.568, -99.768]),
+      (pos) => setUserLocation(normalizarUbicacion(pos.coords.latitude, pos.coords.longitude, pos.coords.accuracy)),
+      () => setUserLocation(IXTLAHUACA_CENTER),
       { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 }
     );
 
     // Seguir observando
     const watchId = navigator.geolocation.watchPosition(
-      (pos) => setUserLocation([pos.coords.latitude, pos.coords.longitude]),
+      (pos) => setUserLocation(normalizarUbicacion(pos.coords.latitude, pos.coords.longitude, pos.coords.accuracy)),
       () => { /* fallback already set */ },
       { enableHighAccuracy: true, timeout: 15000, maximumAge: 3000 }
     );
@@ -119,15 +146,36 @@ export default function ConductorPanel() {
     return () => clearInterval(interval);
   }, [estado, userLocation, userId]);
 
+  // === Cargar solicitudes existentes cuando está online ===
+  useEffect(() => {
+    if (estado !== 'online' || viajeActivo) return;
+
+    let activo = true;
+    const cargar = async () => {
+      const { data } = await obtenerViajesSolicitados();
+      if (!activo) return;
+      setSolicitudesDisponibles(Array.isArray(data) ? data : []);
+    };
+
+    cargar();
+    const interval = setInterval(cargar, 10000);
+
+    return () => {
+      activo = false;
+      clearInterval(interval);
+    };
+  }, [estado, viajeActivo]);
+
   // === Suscripción Realtime a viajes solicitados ===
   useEffect(() => {
     if (estado !== 'online') return;
 
     const channel = suscribirseViajesSolicitados((nuevoViaje) => {
-      // Only show if no active trip
-      if (!viajeActivo) {
-        setSolicitudPendiente(nuevoViaje);
-      }
+      if (viajeActivo) return;
+      setSolicitudesDisponibles((prev) => {
+        if (prev.some((v) => v.id === nuevoViaje.id)) return prev;
+        return [nuevoViaje, ...prev];
+      });
     });
 
     return () => { supabase.removeChannel(channel); };
@@ -156,19 +204,19 @@ export default function ConductorPanel() {
         });
       }
     }
-    if (solicitudPendiente) {
-      if (solicitudPendiente.origen_lat && solicitudPendiente.origen_lng) {
+    solicitudesDisponibles.forEach((solicitud) => {
+      if (solicitud.origen_lat && solicitud.origen_lng) {
         marks.push({
-          id: 'solicitud',
-          lat: Number(solicitudPendiente.origen_lat),
-          lng: Number(solicitudPendiente.origen_lng),
+          id: `solicitud-${solicitud.id}`,
+          lat: Number(solicitud.origen_lat),
+          lng: Number(solicitud.origen_lng),
           tipo: 'usuario',
-          label: solicitudPendiente.origen_direccion || 'Pasajero',
+          label: solicitud.origen_direccion || 'Pasajero',
         });
       }
-    }
+    });
     setMarcadores(marks);
-  }, [viajeActivo, solicitudPendiente]);
+  }, [viajeActivo, solicitudesDisponibles]);
 
   // === Actions ===
   const toggleOnline = useCallback(async () => {
@@ -177,25 +225,24 @@ export default function ConductorPanel() {
       await supabase.from('conductores').update({ esta_disponible: true }).eq('id', userId);
     } else if (estado === 'online') {
       setEstado('offline');
-      setSolicitudPendiente(null);
+      setSolicitudesDisponibles([]);
       await supabase.from('conductores').update({ esta_disponible: false }).eq('id', userId);
     }
   }, [estado, userId]);
 
-  const aceptar = useCallback(async () => {
-    if (!solicitudPendiente) return;
-    const { data, error } = await aceptarViaje(solicitudPendiente.id, userId);
+  const aceptar = useCallback(async (viaje: ViajeDB) => {
+    const { data, error } = await aceptarViaje(viaje.id, userId);
     if (error) {
-      setSolicitudPendiente(null); // Trip was already taken
+      setSolicitudesDisponibles((prev) => prev.filter((item) => item.id !== viaje.id));
       return;
     }
     setViajeActivo(data);
-    setSolicitudPendiente(null);
+    setSolicitudesDisponibles((prev) => prev.filter((item) => item.id !== viaje.id));
     setEstado('viaje_aceptado');
-  }, [solicitudPendiente, userId]);
+  }, [userId]);
 
-  const rechazar = useCallback(() => {
-    setSolicitudPendiente(null);
+  const rechazar = useCallback((viajeId: string) => {
+    setSolicitudesDisponibles((prev) => prev.filter((item) => item.id !== viajeId));
   }, []);
 
   const finalizarViaje = useCallback(async () => {
@@ -282,44 +329,57 @@ export default function ConductorPanel() {
       <main className="relative z-20 flex-1 flex flex-col justify-end p-4 pb-8 pointer-events-none">
 
         {/* SOLICITUD PENDIENTE */}
-        {solicitudPendiente && estado === 'online' && (
-          <div className="pointer-events-auto bg-black/80 backdrop-blur-2xl border-2 border-teal-500/50 p-6 rounded-[2rem] shadow-[0_0_60px_rgba(20,184,166,0.2)] w-full mb-4 animate-in slide-in-from-bottom-10 fade-in duration-300">
+        {solicitudesDisponibles.length > 0 && estado === 'online' && (
+          <div className="pointer-events-auto bg-black/80 backdrop-blur-2xl border-2 border-teal-500/50 p-6 rounded-[2rem] shadow-[0_0_60px_rgba(20,184,166,0.2)] w-full mb-4 animate-in slide-in-from-bottom-10 fade-in duration-300 max-h-[55vh] overflow-y-auto">
             <div className="flex items-center justify-between mb-4">
               <div className="flex items-center gap-3">
                 <span className="relative flex h-3 w-3">
                   <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-teal-400 opacity-75"></span>
                   <span className="relative inline-flex rounded-full h-3 w-3 bg-teal-500"></span>
                 </span>
-                <h3 className="text-lg font-bold text-white">¡Nuevo Viaje!</h3>
+                <h3 className="text-lg font-bold text-white">Viajes disponibles</h3>
               </div>
-              <span className="text-teal-400 font-bold text-2xl">${solicitudPendiente.precio_estimado}</span>
+              <span className="text-teal-300 text-sm font-semibold">
+                {solicitudesDisponibles.length} solicitudes
+              </span>
             </div>
 
-            <div className="space-y-3 mb-5">
-              <div className="flex items-start gap-3">
-                <div className="mt-1.5 w-3 h-3 rounded-full bg-blue-500 shadow-[0_0_8px_rgba(59,130,246,0.8)] flex-shrink-0" />
-                <div className="min-w-0">
-                  <p className="text-gray-400 text-xs uppercase font-semibold">Origen</p>
-                  <p className="text-white font-medium truncate">{solicitudPendiente.origen_direccion || 'Ubicación del pasajero'}</p>
-                </div>
-              </div>
-              <div className="ml-1.5 h-3 border-l-2 border-dashed border-gray-600" />
-              <div className="flex items-start gap-3">
-                <div className="mt-1.5 w-3 h-3 rounded-full bg-red-500 shadow-[0_0_8px_rgba(239,68,68,0.8)] flex-shrink-0" />
-                <div className="min-w-0">
-                  <p className="text-gray-400 text-xs uppercase font-semibold">Destino</p>
-                  <p className="text-white font-medium truncate">{solicitudPendiente.destino_direccion || 'Sin nombre'}</p>
-                </div>
-              </div>
-            </div>
+            <div className="space-y-4">
+              {solicitudesDisponibles.map((solicitud) => (
+                <div key={solicitud.id} className="bg-white/5 border border-white/10 rounded-2xl p-4">
+                  <div className="flex items-center justify-between mb-3">
+                    <p className="text-white font-bold">Solicitud</p>
+                    <span className="text-teal-400 font-bold text-xl">${solicitud.precio_estimado}</span>
+                  </div>
 
-            <div className="grid grid-cols-5 gap-3">
-              <button onClick={rechazar} className="col-span-2 py-4 rounded-xl bg-white/5 hover:bg-white/10 text-gray-300 font-bold transition-all border border-white/10">
-                Rechazar
-              </button>
-              <button onClick={aceptar} className="col-span-3 py-4 rounded-xl bg-gradient-to-r from-teal-500 to-emerald-400 hover:from-teal-400 hover:to-emerald-300 text-black font-extrabold text-lg transition-all shadow-[0_0_20px_rgba(16,185,129,0.4)]">
-                Aceptar
-              </button>
+                  <div className="space-y-3 mb-4">
+                    <div className="flex items-start gap-3">
+                      <div className="mt-1.5 w-3 h-3 rounded-full bg-blue-500 shadow-[0_0_8px_rgba(59,130,246,0.8)] flex-shrink-0" />
+                      <div className="min-w-0">
+                        <p className="text-gray-400 text-xs uppercase font-semibold">Origen</p>
+                        <p className="text-white font-medium truncate">{solicitud.origen_direccion || 'Ubicación del pasajero'}</p>
+                      </div>
+                    </div>
+                    <div className="ml-1.5 h-3 border-l-2 border-dashed border-gray-600" />
+                    <div className="flex items-start gap-3">
+                      <div className="mt-1.5 w-3 h-3 rounded-full bg-red-500 shadow-[0_0_8px_rgba(239,68,68,0.8)] flex-shrink-0" />
+                      <div className="min-w-0">
+                        <p className="text-gray-400 text-xs uppercase font-semibold">Destino</p>
+                        <p className="text-white font-medium truncate">{solicitud.destino_direccion || 'Sin nombre'}</p>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-5 gap-3">
+                    <button onClick={() => rechazar(solicitud.id)} className="col-span-2 py-3 rounded-xl bg-white/5 hover:bg-white/10 text-gray-300 font-bold transition-all border border-white/10">
+                      Rechazar
+                    </button>
+                    <button onClick={() => aceptar(solicitud)} className="col-span-3 py-3 rounded-xl bg-gradient-to-r from-teal-500 to-emerald-400 hover:from-teal-400 hover:to-emerald-300 text-black font-extrabold transition-all shadow-[0_0_20px_rgba(16,185,129,0.4)]">
+                      Aceptar
+                    </button>
+                  </div>
+                </div>
+              ))}
             </div>
           </div>
         )}
@@ -366,7 +426,7 @@ export default function ConductorPanel() {
         )}
 
         {/* BOTÓN CONECTAR/DESCONECTAR */}
-        {!viajeActivo && !solicitudPendiente && (
+        {!viajeActivo && solicitudesDisponibles.length === 0 && (
           <div className="pointer-events-auto w-full flex justify-center">
             <button
               onClick={toggleOnline}

@@ -1,4 +1,4 @@
-import { supabase } from '@/backend/config/database';
+import { supabaseServer as supabase } from '@/backend/config/databaseServer';
 import { TABLA_USUARIOS } from '@/backend/models/Usuario';
 import type { Usuario } from '@/types/usuario';
 

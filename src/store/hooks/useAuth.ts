@@ -3,6 +3,7 @@
 import { useState, useEffect } from 'react';
 import { supabase } from '@/backend/config/database';
 import type { User } from '@supabase/supabase-js';
+import { obtenerUsuarioSeguro } from '@/services/auth/sessionSafe';
 
 export function useAuth() {
   const [user, setUser] = useState<User | null>(null);
@@ -11,7 +12,7 @@ export function useAuth() {
   useEffect(() => {
     // Obtener sesión actual
     const getSession = async () => {
-      const { data: { user } } = await supabase.auth.getUser();
+      const { user } = await obtenerUsuarioSeguro();
       setUser(user);
       setLoading(false);
     };

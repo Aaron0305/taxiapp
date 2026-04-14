@@ -1,4 +1,5 @@
 import { supabase } from '@/backend/config/database';
+import { obtenerSesionSegura, obtenerUsuarioSeguro } from '@/services/auth/sessionSafe';
 
 export async function iniciarSesion(email: string, password: string) {
   const { data, error } = await supabase.auth.signInWithPassword({ email, password });
@@ -24,11 +25,11 @@ export async function cerrarSesion() {
 }
 
 export async function obtenerSesionActual() {
-  const { data: { session } } = await supabase.auth.getSession();
+  const { session } = await obtenerSesionSegura();
   return session;
 }
 
 export async function obtenerUsuarioActual() {
-  const { data: { user } } = await supabase.auth.getUser();
+  const { user } = await obtenerUsuarioSeguro();
   return user;
 }

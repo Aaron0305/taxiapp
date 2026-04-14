@@ -1,4 +1,4 @@
-import { supabase } from '@/backend/config/database';
+import { supabaseServer as supabase } from '@/backend/config/databaseServer';
 import { TABLA_PAGOS } from '@/backend/models/Pago';
 import type { Pago } from '@/types/pago';
 

@@ -7,6 +7,7 @@ import {
 } from '@/backend/controllers/viajController';
 import { validarCreateViaje } from '@/backend/dtos/CreateViajeDto';
 import { manejarError } from '@/backend/middleware/errorHandler';
+import { ENV } from '@/backend/config/env';
 
 export async function GET(req: NextRequest) {
   try {
@@ -49,6 +50,9 @@ export async function POST(req: NextRequest) {
 
     const viaje = await solicitarViaje(pasajero_id, solicitud);
     if (!viaje) {
+      if (!ENV.SUPABASE_SERVICE_KEY) {
+        return NextResponse.json({ error: 'Error al crear viaje: falta configurar SUPABASE_SERVICE_ROLE_KEY en el servidor.' }, { status: 500 });
+      }
       return NextResponse.json({ error: 'Error al crear viaje' }, { status: 500 });
     }
 
