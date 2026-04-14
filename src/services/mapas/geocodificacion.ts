@@ -35,6 +35,8 @@ export async function buscarDireccion(query: string): Promise<ResultadoBusqueda[
 
 // Geocodificación inversa — obtener dirección de unas coordenadas
 export async function obtenerDireccion(lat: number, lng: number): Promise<string> {
+  const fallback = `Lat ${lat.toFixed(5)}, Lng ${lng.toFixed(5)}`;
+
   try {
     const params = new URLSearchParams({
       mode: 'reverse',
@@ -46,11 +48,11 @@ export async function obtenerDireccion(lat: number, lng: number): Promise<string
       cache: 'no-store',
     });
 
-    if (!response.ok) return 'Ubicación desconocida';
+    if (!response.ok) return fallback;
 
     const data = await response.json();
-    return data?.direccion || 'Ubicación desconocida';
+    return data?.direccion || fallback;
   } catch {
-    return 'Ubicación desconocida';
+    return fallback;
   }
 }
