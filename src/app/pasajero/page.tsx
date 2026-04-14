@@ -71,28 +71,56 @@ export default function PasajeroPanel() {
     iniciar();
   }, [router]);
 
-  // === GPS del usuario ===
+  // === GPS del usuario — obtener ubicación real ===
   useEffect(() => {
-    if (!navigator.geolocation) return;
+    if (!navigator.geolocation) {
+      console.warn('Geolocation not supported');
+      setUserLocation([19.568, -99.768]);
+      return;
+    }
 
+    let ubicacionObtenida = false;
+
+    // 1. Intentar obtener posición inmediata
+    navigator.geolocation.getCurrentPosition(
+      async (pos) => {
+        const coords: [number, number] = [pos.coords.latitude, pos.coords.longitude];
+        setUserLocation(coords);
+        ubicacionObtenida = true;
+        try {
+          const dir = await obtenerDireccion(coords[0], coords[1]);
+          setOrigenDireccion(dir.split(',').slice(0, 2).join(','));
+        } catch { /* ignore */ }
+      },
+      (err) => {
+        console.warn('GPS getCurrentPosition error:', err.message);
+        if (!ubicacionObtenida) {
+          setUserLocation([19.568, -99.768]);
+          setOrigenDireccion('Ixtlahuaca, México');
+        }
+      },
+      { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 }
+    );
+
+    // 2. Seguir observando cambios de posición
     const watchId = navigator.geolocation.watchPosition(
       async (pos) => {
         const coords: [number, number] = [pos.coords.latitude, pos.coords.longitude];
         setUserLocation(coords);
-        if (origenDireccion === 'Mi ubicación') {
-          const dir = await obtenerDireccion(coords[0], coords[1]);
-          setOrigenDireccion(dir.split(',').slice(0, 2).join(','));
+        ubicacionObtenida = true;
+        if (origenDireccion === 'Mi ubicación' || origenDireccion === 'Ixtlahuaca, México') {
+          try {
+            const dir = await obtenerDireccion(coords[0], coords[1]);
+            setOrigenDireccion(dir.split(',').slice(0, 2).join(','));
+          } catch { /* ignore */ }
         }
       },
-      () => {
-        // Fallback: Ixtlahuaca center
-        setUserLocation([19.568, -99.768]);
-      },
-      { enableHighAccuracy: true, timeout: 10000, maximumAge: 5000 }
+      () => { /* silent fallback, getCurrentPosition already handled it */ },
+      { enableHighAccuracy: true, timeout: 15000, maximumAge: 5000 }
     );
 
     return () => navigator.geolocation.clearWatch(watchId);
-  }, [origenDireccion]);
+  }, []);
 
   // === Suscripción Realtime al viaje activo ===
   useEffect(() => {

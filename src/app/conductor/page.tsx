@@ -77,18 +77,25 @@ export default function ConductorPanel() {
     iniciar();
   }, [router]);
 
-  // === GPS conductor ===
+  // === GPS conductor — obtener ubicación real ===
   useEffect(() => {
-    if (!navigator.geolocation) return;
+    if (!navigator.geolocation) {
+      setUserLocation([19.568, -99.768]);
+      return;
+    }
 
+    // Posición inmediata
+    navigator.geolocation.getCurrentPosition(
+      (pos) => setUserLocation([pos.coords.latitude, pos.coords.longitude]),
+      () => setUserLocation([19.568, -99.768]),
+      { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 }
+    );
+
+    // Seguir observando
     const watchId = navigator.geolocation.watchPosition(
-      (pos) => {
-        setUserLocation([pos.coords.latitude, pos.coords.longitude]);
-      },
-      () => {
-        setUserLocation([19.568, -99.768]);
-      },
-      { enableHighAccuracy: true, timeout: 10000, maximumAge: 3000 }
+      (pos) => setUserLocation([pos.coords.latitude, pos.coords.longitude]),
+      () => { /* fallback already set */ },
+      { enableHighAccuracy: true, timeout: 15000, maximumAge: 3000 }
     );
 
     return () => navigator.geolocation.clearWatch(watchId);

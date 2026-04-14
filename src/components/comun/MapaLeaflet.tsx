@@ -62,6 +62,7 @@ export default function MapaLeaflet({
   const containerRef = useRef<HTMLDivElement>(null);
   const markersRef = useRef<Map<string, L.Marker>>(new Map());
   const userMarkerRef = useRef<L.Marker | null>(null);
+  const hasCenteredOnUserRef = useRef(false);
   const [ready, setReady] = useState(false);
 
   // Init map
@@ -93,6 +94,9 @@ export default function MapaLeaflet({
 
     mapRef.current = map;
     setReady(true);
+
+    // Force a resize after a small delay to fix rendering issues
+    setTimeout(() => map.invalidateSize(), 200);
 
     return () => {
       map.remove();
@@ -134,41 +138,44 @@ export default function MapaLeaflet({
 
   // Update user location marker
   useEffect(() => {
-    if (!mapRef.current || !ready) return;
+    if (!mapRef.current || !ready || !userLocation) return;
 
-    if (userLocation) {
-      if (userMarkerRef.current) {
-        userMarkerRef.current.setLatLng(userLocation);
-      } else {
-        const marker = L.marker(userLocation, {
-          icon: L.divIcon({
-            className: 'user-pulse-marker',
-            html: `<div style="
-              position: relative;
-              width: 20px; height: 20px;
-            ">
-              <div style="
-                position: absolute; inset: -8px;
-                background: rgba(59,130,246,0.2);
-                border-radius: 50%;
-                animation: pulse-ring 2s ease-out infinite;
-              "></div>
-              <div style="
-                width: 20px; height: 20px;
-                background: #3b82f6;
-                border: 3px solid white;
-                border-radius: 50%;
-                box-shadow: 0 2px 8px rgba(0,0,0,0.3);
-              "></div>
-            </div>`,
-            iconSize: [20, 20],
-            iconAnchor: [10, 10],
-          }),
-        }).addTo(mapRef.current);
-        userMarkerRef.current = marker;
-      }
+    // Update or create the user location marker
+    if (userMarkerRef.current) {
+      userMarkerRef.current.setLatLng(userLocation);
+    } else {
+      const marker = L.marker(userLocation, {
+        icon: L.divIcon({
+          className: 'user-pulse-marker',
+          html: `<div style="
+            position: relative;
+            width: 22px; height: 22px;
+          ">
+            <div style="
+              position: absolute; inset: -10px;
+              background: rgba(59,130,246,0.25);
+              border-radius: 50%;
+              animation: pulse-ring 2s ease-out infinite;
+            "></div>
+            <div style="
+              width: 22px; height: 22px;
+              background: #3b82f6;
+              border: 3px solid white;
+              border-radius: 50%;
+              box-shadow: 0 2px 12px rgba(59,130,246,0.6);
+            "></div>
+          </div>`,
+          iconSize: [22, 22],
+          iconAnchor: [11, 11],
+        }),
+      }).addTo(mapRef.current);
+      userMarkerRef.current = marker;
+    }
 
-      mapRef.current.setView(userLocation, mapRef.current.getZoom());
+    // Center map on user location ONLY the first time we get real GPS
+    if (!hasCenteredOnUserRef.current) {
+      mapRef.current.setView(userLocation, 16, { animate: true });
+      hasCenteredOnUserRef.current = true;
     }
   }, [userLocation, ready]);
 
