@@ -21,6 +21,21 @@ const MapaLeaflet = dynamic(() => import('@/components/comun/MapaLeaflet'), { ss
 
 type Paso = 'inicio' | 'buscando_destino' | 'confirmar' | 'esperando' | 'viaje_activo' | 'completado';
 
+interface SugerenciaViaje {
+  id: string;
+  titulo: string;
+  detalle: string;
+  etaRecogidaMin: number;
+  etaTotalMin: number;
+}
+
+interface ConductorCercanoRaw {
+  id: string;
+  ubicacion_actual: unknown;
+  ultima_conexion: string | null;
+  esta_disponible: boolean;
+}
+
 const IXTLAHUACA_CENTER: [number, number] = [19.568, -99.768];
 
 function distanciaKm(aLat: number, aLng: number, bLat: number, bLng: number) {
@@ -46,6 +61,37 @@ function normalizarUbicacion(lat: number, lng: number, accuracy?: number | null)
   return [lat, lng];
 }
 
+function parsePoint(point: string): [number, number] | null {
+  const limpio = point.trim();
+  if (!limpio.startsWith('POINT(') || !limpio.endsWith(')')) return null;
+  const inner = limpio.slice(6, -1).trim();
+  const [lngRaw, latRaw] = inner.split(' ');
+  const lat = Number(latRaw);
+  const lng = Number(lngRaw);
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+  return [lat, lng];
+}
+
+function extraerCoordsConductor(raw: unknown): [number, number] | null {
+  if (typeof raw === 'string') return parsePoint(raw);
+  if (typeof raw === 'object' && raw !== null && 'coordinates' in raw) {
+    const coords = (raw as { coordinates?: unknown }).coordinates;
+    if (Array.isArray(coords) && coords.length >= 2) {
+      const lng = Number(coords[0]);
+      const lat = Number(coords[1]);
+      if (Number.isFinite(lat) && Number.isFinite(lng)) return [lat, lng];
+    }
+  }
+  return null;
+}
+
+function tituloSugerencia(index: number, etaRecogidaMin: number): string {
+  if (index === 0 && etaRecogidaMin <= 4) return 'Express';
+  if (index === 0) return 'Mas cercano';
+  if (index === 1) return 'Alternativa rapida';
+  return 'Opcion flexible';
+}
+
 export default function PasajeroPanel() {
   const router = useRouter();
   const [paso, setPaso] = useState<Paso>('inicio');
@@ -68,6 +114,9 @@ export default function PasajeroPanel() {
   const [viajeActivo, setViajeActivo] = useState<ViajeDB | null>(null);
   const [conductorLocation, setConductorLocation] = useState<[number, number] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [sugerenciasViaje, setSugerenciasViaje] = useState<SugerenciaViaje[]>([]);
+  const [cargandoSugerencias, setCargandoSugerencias] = useState(false);
+  const [conductoresCercanos, setConductoresCercanos] = useState(0);
 
   // Map markers
   const [marcadores, setMarcadores] = useState<Array<{ id: string; lat: number; lng: number; tipo: 'usuario' | 'destino' | 'conductor'; label?: string }>>([]);
@@ -233,6 +282,88 @@ export default function PasajeroPanel() {
       if (searchTimeoutRef.current) clearTimeout(searchTimeoutRef.current);
     };
   }, [queryDestino]);
+
+  const calcularSugerenciasConductor = useCallback(async () => {
+    if (!userLocation || !destinoSeleccionado) {
+      setSugerenciasViaje([]);
+      setConductoresCercanos(0);
+      return;
+    }
+
+    setCargandoSugerencias(true);
+    const { data, error: conductoresError } = await supabase
+      .from('conductores')
+      .select('id, ubicacion_actual, ultima_conexion, esta_disponible')
+      .eq('esta_disponible', true)
+      .not('ubicacion_actual', 'is', null)
+      .limit(40);
+
+    if (conductoresError || !Array.isArray(data)) {
+      setSugerenciasViaje([]);
+      setConductoresCercanos(0);
+      setCargandoSugerencias(false);
+      return;
+    }
+
+    const distanciaTrayectoKm = distanciaKm(
+      userLocation[0],
+      userLocation[1],
+      destinoSeleccionado.lat,
+      destinoSeleccionado.lng
+    );
+    const ahora = Date.now();
+
+    const candidatos = (data as ConductorCercanoRaw[])
+      .map((c) => {
+        const coords = extraerCoordsConductor(c.ubicacion_actual);
+        if (!coords) return null;
+
+        const actualizadoHaceMs = c.ultima_conexion
+          ? ahora - new Date(c.ultima_conexion).getTime()
+          : Number.MAX_SAFE_INTEGER;
+
+        const distanciaConductorKm = distanciaKm(coords[0], coords[1], userLocation[0], userLocation[1]);
+        const etaRecogidaMin = Math.max(2, Math.ceil((distanciaConductorKm / 25) * 60));
+        const etaViajeMin = Math.max(3, Math.ceil((distanciaTrayectoKm / 30) * 60));
+
+        return {
+          id: c.id,
+          distanciaConductorKm,
+          etaRecogidaMin,
+          etaTotalMin: etaRecogidaMin + etaViajeMin,
+          actualizadoHaceMs,
+        };
+      })
+      .filter((item): item is NonNullable<typeof item> => Boolean(item))
+      .filter((item) => item.actualizadoHaceMs <= 120000)
+      .sort((a, b) => a.distanciaConductorKm - b.distanciaConductorKm);
+
+    setConductoresCercanos(candidatos.length);
+
+    const sugerencias = candidatos.slice(0, 3).map((c, index) => ({
+      id: c.id,
+      titulo: tituloSugerencia(index, c.etaRecogidaMin),
+      detalle: `${c.distanciaConductorKm.toFixed(1)} km del punto de recogida`,
+      etaRecogidaMin: c.etaRecogidaMin,
+      etaTotalMin: c.etaTotalMin,
+    }));
+
+    setSugerenciasViaje(sugerencias);
+    setCargandoSugerencias(false);
+  }, [userLocation, destinoSeleccionado]);
+
+  useEffect(() => {
+    if (paso !== 'confirmar') return;
+
+    const timer = setTimeout(() => {
+      void calcularSugerenciasConductor();
+    }, 0);
+    const interval = setInterval(calcularSugerenciasConductor, 15000);
+    return () => {
+      clearTimeout(timer);
+      clearInterval(interval);
+    };
+  }, [paso, calcularSugerenciasConductor]);
 
   // === Update map markers ===
   useEffect(() => {
@@ -499,7 +630,7 @@ export default function PasajeroPanel() {
 
         {/* === PASO: CONFIRMAR VIAJE === */}
         {paso === 'confirmar' && destinoSeleccionado && (
-          <div className="pointer-events-auto bg-[#0f1629]/95 backdrop-blur-2xl border-t border-white/10 p-6 rounded-t-[2rem] shadow-2xl">
+          <div className="pointer-events-auto bg-[#0f1629]/95 backdrop-blur-2xl border-t border-white/10 p-6 rounded-t-[2rem] shadow-2xl max-h-[78vh] overflow-y-auto">
             <h3 className="text-lg font-bold text-white mb-4">Confirmar viaje</h3>
 
             <div className="space-y-3 mb-6">
@@ -529,6 +660,36 @@ export default function PasajeroPanel() {
                 <p className="text-gray-400 text-xs">🚕 Taxi Clásico</p>
                 <p className="text-emerald-400 text-xs font-semibold">Pago en efectivo</p>
               </div>
+            </div>
+
+            <div className="bg-white/5 border border-white/10 rounded-2xl p-4 mb-6">
+              <div className="flex items-center justify-between mb-3">
+                <p className="text-gray-300 text-sm font-semibold">Sugerencias por distancia de conductores</p>
+                <p className="text-xs text-gray-400">{conductoresCercanos} cerca</p>
+              </div>
+
+              {cargandoSugerencias && (
+                <p className="text-gray-400 text-sm">Analizando conductores cercanos...</p>
+              )}
+
+              {!cargandoSugerencias && sugerenciasViaje.length === 0 && (
+                <p className="text-gray-400 text-sm">No hay suficientes conductores activos para sugerir tiempos.</p>
+              )}
+
+              {!cargandoSugerencias && sugerenciasViaje.length > 0 && (
+                <div className="space-y-2">
+                  {sugerenciasViaje.map((s) => (
+                    <div key={s.id} className="rounded-xl border border-white/10 bg-black/20 p-3">
+                      <div className="flex items-center justify-between gap-3">
+                        <p className="text-white text-sm font-semibold">{s.titulo}</p>
+                        <p className="text-emerald-400 text-sm font-bold">{s.etaRecogidaMin} min recogida</p>
+                      </div>
+                      <p className="text-gray-400 text-xs mt-1">{s.detalle}</p>
+                      <p className="text-blue-300 text-xs mt-1">Tiempo total estimado del viaje: {s.etaTotalMin} min</p>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
 
             {error && <p className="text-red-400 text-sm mb-4 bg-red-500/10 p-3 rounded-xl">{error}</p>}
