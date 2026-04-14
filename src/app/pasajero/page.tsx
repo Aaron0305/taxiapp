@@ -38,6 +38,8 @@ interface ConductorCercanoRaw {
 
 const IXTLAHUACA_CENTER: [number, number] = [19.568, -99.768];
 const HISTORIAL_DESTINOS_MAX = 6;
+const RADIO_ZONA_KM = 5;
+const ULTIMA_CONEXION_MAX_MS = 120000;
 
 function distanciaKm(aLat: number, aLng: number, bLat: number, bLng: number) {
   const R = 6371;
@@ -118,6 +120,8 @@ export default function PasajeroPanel() {
   const [sugerenciasViaje, setSugerenciasViaje] = useState<SugerenciaViaje[]>([]);
   const [cargandoSugerencias, setCargandoSugerencias] = useState(false);
   const [conductoresCercanos, setConductoresCercanos] = useState(0);
+  const [conductoresZonaRealtime, setConductoresZonaRealtime] = useState(0);
+  const [actualizandoZona, setActualizandoZona] = useState(false);
   const [cancelandoViaje, setCancelandoViaje] = useState(false);
   const [historialDestinos, setHistorialDestinos] = useState<ResultadoBusqueda[]>([]);
 
@@ -126,6 +130,7 @@ export default function PasajeroPanel() {
 
   const searchTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const searchRequestIdRef = useRef(0);
+  const refreshConductoresTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
   const keyHistorialDestinos = useCallback((uid: string) => `ixtlappp:historial-destinos:${uid}`, []);
 
@@ -139,6 +144,64 @@ export default function PasajeroPanel() {
       return actualizado;
     });
   }, [userId, keyHistorialDestinos]);
+
+  const calcularConductoresEnZona = useCallback((conductores: ConductorCercanoRaw[], origen: [number, number]) => {
+    const ahora = Date.now();
+
+    return conductores
+      .map((c) => {
+        const coords = extraerCoordsConductor(c.ubicacion_actual);
+        if (!coords) return null;
+
+        const actualizadoHaceMs = c.ultima_conexion
+          ? ahora - new Date(c.ultima_conexion).getTime()
+          : Number.MAX_SAFE_INTEGER;
+
+        const distanciaConductorKm = distanciaKm(coords[0], coords[1], origen[0], origen[1]);
+        return {
+          distanciaConductorKm,
+          actualizadoHaceMs,
+        };
+      })
+      .filter((item): item is NonNullable<typeof item> => Boolean(item))
+      .filter((item) => item.actualizadoHaceMs <= ULTIMA_CONEXION_MAX_MS)
+      .filter((item) => item.distanciaConductorKm <= RADIO_ZONA_KM)
+      .length;
+  }, []);
+
+  const refrescarConductoresZona = useCallback(async (location: [number, number] | null, silent = false) => {
+    if (!location) return;
+    if (!silent) setActualizandoZona(true);
+
+    const { data, error: conductoresError } = await supabase
+      .from('conductores')
+      .select('id, ubicacion_actual, ultima_conexion, esta_disponible')
+      .eq('esta_disponible', true)
+      .not('ubicacion_actual', 'is', null)
+      .limit(120);
+
+    if (conductoresError || !Array.isArray(data)) {
+      setConductoresZonaRealtime(0);
+      if (!silent) setActualizandoZona(false);
+      return;
+    }
+
+    const total = calcularConductoresEnZona(data as ConductorCercanoRaw[], location);
+    setConductoresZonaRealtime(total);
+    if (!silent) setActualizandoZona(false);
+  }, [calcularConductoresEnZona]);
+
+  const programarRefreshConductoresZona = useCallback((location: [number, number] | null) => {
+    if (!location) return;
+
+    if (refreshConductoresTimeoutRef.current) {
+      clearTimeout(refreshConductoresTimeoutRef.current);
+    }
+
+    refreshConductoresTimeoutRef.current = setTimeout(() => {
+      void refrescarConductoresZona(location, true);
+    }, 250);
+  }, [refrescarConductoresZona]);
 
   // === Auth & Session ===
   useEffect(() => {
@@ -170,6 +233,43 @@ export default function PasajeroPanel() {
     };
     iniciar();
   }, [router]);
+
+  useEffect(() => {
+    if (!userLocation) return;
+
+    void refrescarConductoresZona(userLocation);
+    const interval = setInterval(() => {
+      void refrescarConductoresZona(userLocation, true);
+    }, 20000);
+
+    return () => clearInterval(interval);
+  }, [userLocation, refrescarConductoresZona]);
+
+  useEffect(() => {
+    if (!userLocation) return;
+
+    const channel = supabase
+      .channel('conductores-zona-realtime')
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'conductores',
+        },
+        () => {
+          programarRefreshConductoresZona(userLocation);
+        }
+      )
+      .subscribe();
+
+    return () => {
+      if (refreshConductoresTimeoutRef.current) {
+        clearTimeout(refreshConductoresTimeoutRef.current);
+      }
+      supabase.removeChannel(channel);
+    };
+  }, [userLocation, programarRefreshConductoresZona]);
 
   useEffect(() => {
     if (!userId) return;
@@ -570,6 +670,9 @@ export default function PasajeroPanel() {
           <div>
             <h2 className="text-white font-bold text-sm leading-tight">{nombreUsuario}</h2>
             <p className="text-emerald-400 text-[10px] font-semibold tracking-wide">PASAJERO</p>
+            <p className="text-[10px] text-blue-300 mt-0.5">
+              Conductores en tu zona ({RADIO_ZONA_KM} km): {actualizandoZona ? 'actualizando...' : conductoresZonaRealtime}
+            </p>
           </div>
         </div>
         <button onClick={handleLogout} className="p-3 bg-black/60 backdrop-blur-xl hover:bg-white/10 border border-white/10 rounded-2xl transition-all text-gray-400 hover:text-white shadow-xl">
