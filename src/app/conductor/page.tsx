@@ -22,6 +22,7 @@ const MapaLeaflet = dynamic(() => import('@/components/comun/MapaLeaflet'), { ss
 type EstadoConductor = 'offline' | 'online' | 'viaje_aceptado' | 'viaje_en_curso';
 
 const IXTLAHUACA_CENTER: [number, number] = [19.568, -99.768];
+const RADIO_CLIENTES_CERCANOS_KM = 5;
 
 type ProveedorNavegacion = 'google' | 'waze' | 'osm';
 
@@ -177,15 +178,20 @@ export default function ConductorPanel() {
   useEffect(() => {
     if (estado === 'offline' || !userLocation || !userId) return;
 
-    const interval = setInterval(async () => {
-      // PostGIS requiere formato POINT(longitud latitud)
+    const actualizarUbicacion = async () => {
       const point = `POINT(${userLocation[1]} ${userLocation[0]})`;
-
       await supabase.from('conductores').update({
         esta_disponible: estado === 'online',
         ultima_conexion: new Date().toISOString(),
         ubicacion_actual: point,
       }).eq('id', userId);
+    };
+
+    // Push inmediato para evitar ventana de 5s con datos stale en pasajero.
+    void actualizarUbicacion();
+
+    const interval = setInterval(async () => {
+      await actualizarUbicacion();
     }, 5000); // Intervalo de 5 segundos
 
     return () => clearInterval(interval);
@@ -226,6 +232,21 @@ export default function ConductorPanel() {
     return () => { supabase.removeChannel(channel); };
   }, [estado, viajeActivo]);
 
+  const solicitudesCercanas = solicitudesDisponibles
+    .filter((solicitud) => solicitud.origen_lat && solicitud.origen_lng)
+    .map((solicitud) => {
+      const distancia = userLocation
+        ? distanciaKm(userLocation[0], userLocation[1], Number(solicitud.origen_lat), Number(solicitud.origen_lng))
+        : Number.MAX_SAFE_INTEGER;
+
+      return {
+        solicitud,
+        distancia,
+      };
+    })
+    .filter((item) => item.distancia <= RADIO_CLIENTES_CERCANOS_KM)
+    .sort((a, b) => a.distancia - b.distancia);
+
   // === Update markers ===
   useEffect(() => {
     const marks: typeof marcadores = [];
@@ -249,7 +270,7 @@ export default function ConductorPanel() {
         });
       }
     }
-    solicitudesDisponibles.forEach((solicitud) => {
+    solicitudesCercanas.forEach((solicitud) => {
       if (solicitud.origen_lat && solicitud.origen_lng) {
         marks.push({
           id: `solicitud-${solicitud.id}`,
@@ -261,7 +282,7 @@ export default function ConductorPanel() {
       }
     });
     setMarcadores(marks);
-  }, [viajeActivo, solicitudesDisponibles]);
+  }, [viajeActivo, solicitudesCercanas]);
 
   // === Actions ===
   const toggleOnline = useCallback(async () => {
@@ -401,7 +422,7 @@ export default function ConductorPanel() {
 
       {/* METRICS BAR */}
       <div className="relative z-10 px-4 mt-1">
-        <div className="grid grid-cols-2 gap-3">
+        <div className="grid grid-cols-3 gap-3">
           <div className="bg-black/50 backdrop-blur-md border border-white/5 rounded-2xl p-3 flex flex-col">
             <span className="text-gray-400 text-[10px] font-semibold uppercase tracking-wider mb-0.5">Ganancias hoy</span>
             <span className="text-xl font-bold text-white">${gananciaHoy.toFixed(2)}</span>
@@ -410,6 +431,12 @@ export default function ConductorPanel() {
             <span className="text-gray-400 text-[10px] font-semibold uppercase tracking-wider mb-0.5">Viajes hoy</span>
             <span className="text-xl font-bold text-white">{viajesHoy} completados</span>
           </div>
+          <div className="bg-black/50 backdrop-blur-md border border-white/5 rounded-2xl p-3 flex flex-col">
+            <span className="text-gray-400 text-[10px] font-semibold uppercase tracking-wider mb-0.5">Clientes cerca</span>
+            <span className="text-xl font-bold text-emerald-300">
+              {estado === 'online' && !viajeActivo ? solicitudesCercanas.length : 0}
+            </span>
+          </div>
         </div>
       </div>
 
@@ -417,7 +444,7 @@ export default function ConductorPanel() {
       <main className="relative z-20 flex-1 flex flex-col justify-end p-4 pb-8 pointer-events-none">
 
         {/* SOLICITUD PENDIENTE */}
-        {solicitudesDisponibles.length > 0 && estado === 'online' && (
+        {solicitudesCercanas.length > 0 && estado === 'online' && (
           <div className="pointer-events-auto bg-black/80 backdrop-blur-2xl border-2 border-teal-500/50 p-6 rounded-[2rem] shadow-[0_0_60px_rgba(20,184,166,0.2)] w-full mb-4 animate-in slide-in-from-bottom-10 fade-in duration-300 max-h-[55vh] overflow-y-auto">
             <div className="flex items-center justify-between mb-4">
               <div className="flex items-center gap-3">
@@ -428,16 +455,25 @@ export default function ConductorPanel() {
                 <h3 className="text-lg font-bold text-white">Viajes disponibles</h3>
               </div>
               <span className="text-teal-300 text-sm font-semibold">
-                {solicitudesDisponibles.length} solicitudes
+                {solicitudesCercanas.length} cerca
               </span>
             </div>
 
+            {solicitudesDisponibles.length > solicitudesCercanas.length && (
+              <p className="text-xs text-gray-400 mb-3">
+                {solicitudesDisponibles.length - solicitudesCercanas.length} solicitudes fuera del radio de {RADIO_CLIENTES_CERCANOS_KM} km
+              </p>
+            )}
+
             <div className="space-y-4">
-              {solicitudesDisponibles.map((solicitud) => (
+              {solicitudesCercanas.map(({ solicitud, distancia }) => (
                 <div key={solicitud.id} className="bg-white/5 border border-white/10 rounded-2xl p-4">
                   <div className="flex items-center justify-between mb-3">
                     <p className="text-white font-bold">Solicitud</p>
-                    <span className="text-teal-400 font-bold text-xl">${solicitud.precio_estimado}</span>
+                    <div className="text-right">
+                      <span className="text-teal-400 font-bold text-xl block">${solicitud.precio_estimado}</span>
+                      <span className="text-[10px] text-blue-300 font-semibold">{distancia.toFixed(1)} km</span>
+                    </div>
                   </div>
 
                   <div className="space-y-3 mb-4">
@@ -469,6 +505,13 @@ export default function ConductorPanel() {
                 </div>
               ))}
             </div>
+          </div>
+        )}
+
+        {estado === 'online' && !viajeActivo && solicitudesDisponibles.length > 0 && solicitudesCercanas.length === 0 && (
+          <div className="pointer-events-auto bg-black/70 backdrop-blur-xl border border-white/10 p-5 rounded-2xl w-full mb-4 text-center">
+            <p className="text-white font-semibold">No hay clientes dentro de tu zona cercana</p>
+            <p className="text-xs text-gray-400 mt-1">Mantente en línea o cambia tu posición para recibir solicitudes dentro de {RADIO_CLIENTES_CERCANOS_KM} km.</p>
           </div>
         )}
 

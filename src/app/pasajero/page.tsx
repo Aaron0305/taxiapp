@@ -36,10 +36,17 @@ interface ConductorCercanoRaw {
   esta_disponible: boolean;
 }
 
+interface ConductorZona {
+  id: string;
+  lat: number;
+  lng: number;
+  distanciaConductorKm: number;
+}
+
 const IXTLAHUACA_CENTER: [number, number] = [19.568, -99.768];
 const HISTORIAL_DESTINOS_MAX = 6;
 const RADIO_ZONA_KM = 5;
-const ULTIMA_CONEXION_MAX_MS = 120000;
+const ULTIMA_CONEXION_MAX_MS = 10 * 60 * 1000;
 
 function distanciaKm(aLat: number, aLng: number, bLat: number, bLng: number) {
   const R = 6371;
@@ -66,9 +73,13 @@ function normalizarUbicacion(lat: number, lng: number, accuracy?: number | null)
 
 function parsePoint(point: string): [number, number] | null {
   const limpio = point.trim();
-  if (!limpio.startsWith('POINT(') || !limpio.endsWith(')')) return null;
-  const inner = limpio.slice(6, -1).trim();
-  const [lngRaw, latRaw] = inner.split(' ');
+  const wkt = limpio
+    .replace('SRID=4326;', '')
+    .replace('POINT (', 'POINT(');
+  if (!wkt.startsWith('POINT(') || !wkt.endsWith(')')) return null;
+
+  const inner = wkt.slice(6, -1).trim();
+  const [lngRaw, latRaw] = inner.split(/\s+/);
   const lat = Number(latRaw);
   const lng = Number(lngRaw);
   if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
@@ -76,7 +87,23 @@ function parsePoint(point: string): [number, number] | null {
 }
 
 function extraerCoordsConductor(raw: unknown): [number, number] | null {
-  if (typeof raw === 'string') return parsePoint(raw);
+  if (typeof raw === 'string') {
+    const directo = parsePoint(raw);
+    if (directo) return directo;
+
+    try {
+      const parsed = JSON.parse(raw) as { coordinates?: unknown };
+      if (Array.isArray(parsed?.coordinates) && parsed.coordinates.length >= 2) {
+        const lng = Number(parsed.coordinates[0]);
+        const lat = Number(parsed.coordinates[1]);
+        if (Number.isFinite(lat) && Number.isFinite(lng)) return [lat, lng];
+      }
+    } catch {
+      // noop
+    }
+
+    return null;
+  }
   if (typeof raw === 'object' && raw !== null && 'coordinates' in raw) {
     const coords = (raw as { coordinates?: unknown }).coordinates;
     if (Array.isArray(coords) && coords.length >= 2) {
@@ -121,6 +148,7 @@ export default function PasajeroPanel() {
   const [cargandoSugerencias, setCargandoSugerencias] = useState(false);
   const [conductoresCercanos, setConductoresCercanos] = useState(0);
   const [conductoresZonaRealtime, setConductoresZonaRealtime] = useState(0);
+  const [conductoresZonaLista, setConductoresZonaLista] = useState<ConductorZona[]>([]);
   const [actualizandoZona, setActualizandoZona] = useState(false);
   const [cancelandoViaje, setCancelandoViaje] = useState(false);
   const [historialDestinos, setHistorialDestinos] = useState<ResultadoBusqueda[]>([]);
@@ -155,10 +183,13 @@ export default function PasajeroPanel() {
 
         const actualizadoHaceMs = c.ultima_conexion
           ? ahora - new Date(c.ultima_conexion).getTime()
-          : Number.MAX_SAFE_INTEGER;
+          : 0;
 
         const distanciaConductorKm = distanciaKm(coords[0], coords[1], origen[0], origen[1]);
         return {
+          id: c.id,
+          lat: coords[0],
+          lng: coords[1],
           distanciaConductorKm,
           actualizadoHaceMs,
         };
@@ -166,7 +197,7 @@ export default function PasajeroPanel() {
       .filter((item): item is NonNullable<typeof item> => Boolean(item))
       .filter((item) => item.actualizadoHaceMs <= ULTIMA_CONEXION_MAX_MS)
       .filter((item) => item.distanciaConductorKm <= RADIO_ZONA_KM)
-      .length;
+      .sort((a, b) => a.distanciaConductorKm - b.distanciaConductorKm);
   }, []);
 
   const refrescarConductoresZona = useCallback(async (location: [number, number] | null, silent = false) => {
@@ -186,8 +217,9 @@ export default function PasajeroPanel() {
       return;
     }
 
-    const total = calcularConductoresEnZona(data as ConductorCercanoRaw[], location);
-    setConductoresZonaRealtime(total);
+    const lista = calcularConductoresEnZona(data as ConductorCercanoRaw[], location);
+    setConductoresZonaLista(lista);
+    setConductoresZonaRealtime(lista.length);
     if (!silent) setActualizandoZona(false);
   }, [calcularConductoresEnZona]);
 
@@ -468,7 +500,7 @@ export default function PasajeroPanel() {
 
         const actualizadoHaceMs = c.ultima_conexion
           ? ahora - new Date(c.ultima_conexion).getTime()
-          : Number.MAX_SAFE_INTEGER;
+          : 0;
 
         const distanciaConductorKm = distanciaKm(coords[0], coords[1], userLocation[0], userLocation[1]);
         const etaRecogidaMin = Math.max(2, Math.ceil((distanciaConductorKm / 25) * 60));
@@ -533,9 +565,19 @@ export default function PasajeroPanel() {
         tipo: 'conductor',
         label: 'Tu Taxi en camino',
       });
+    } else {
+      conductoresZonaLista.forEach((conductor, idx) => {
+        marks.push({
+          id: `conductor-zona-${conductor.id}`,
+          lat: conductor.lat,
+          lng: conductor.lng,
+          tipo: 'conductor',
+          label: `Conductor cerca ${idx + 1} · ${conductor.distanciaConductorKm.toFixed(1)} km`,
+        });
+      });
     }
     setMarcadores(marks);
-  }, [destinoSeleccionado, viajeActivo, conductorLocation]);
+  }, [destinoSeleccionado, viajeActivo, conductorLocation, conductoresZonaLista]);
 
   // === Acciones ===
   const manejarClickMapa = useCallback(async (lat: number, lng: number) => {
@@ -755,6 +797,26 @@ export default function PasajeroPanel() {
                 </div>
               </div>
             )}
+
+            <div className="mt-4 rounded-xl border border-white/10 bg-white/5 p-3">
+              <div className="flex items-center justify-between mb-2">
+                <p className="text-xs uppercase text-gray-400 font-semibold">Conductores cercanos en tiempo real</p>
+                <p className="text-xs text-emerald-300 font-semibold">{actualizandoZona ? 'actualizando...' : `${conductoresZonaRealtime} activos`}</p>
+              </div>
+
+              {conductoresZonaLista.length === 0 ? (
+                <p className="text-xs text-gray-500">Aun no hay conductores cercanos en tu radio actual.</p>
+              ) : (
+                <div className="space-y-1.5 max-h-28 overflow-y-auto pr-1">
+                  {conductoresZonaLista.slice(0, 8).map((conductor, idx) => (
+                    <div key={`lista-conductor-${conductor.id}`} className="flex items-center justify-between text-xs">
+                      <span className="text-gray-300">Conductor #{idx + 1}</span>
+                      <span className="text-blue-300 font-semibold">{conductor.distanciaConductorKm.toFixed(1)} km</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
           </div>
         )}
 
