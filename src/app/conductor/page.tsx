@@ -6,6 +6,7 @@ import { useRouter } from 'next/navigation';
 import dynamic from 'next/dynamic';
 import {
   aceptarViaje,
+  iniciarViaje,
   completarViaje,
   obtenerViajeActivoConductor,
   obtenerViajesSolicitados,
@@ -14,12 +15,54 @@ import {
   type ViajeDB,
 } from '@/services/api/viajeService';
 import { obtenerSesionSegura, obtenerUsuarioSeguro } from '@/services/auth/sessionSafe';
+import IndicadorGPS from '@/components/conductor/IndicadorGPS';
 
 const MapaLeaflet = dynamic(() => import('@/components/comun/MapaLeaflet'), { ssr: false });
 
 type EstadoConductor = 'offline' | 'online' | 'viaje_aceptado' | 'viaje_en_curso';
 
 const IXTLAHUACA_CENTER: [number, number] = [19.568, -99.768];
+
+type ProveedorNavegacion = 'google' | 'waze' | 'osm';
+
+function construirUrlNavegacion(
+  proveedor: ProveedorNavegacion,
+  origen: [number, number] | null,
+  destino: [number, number] | null
+) {
+  if (!destino) return null;
+
+  const destinoTexto = `${destino[0]},${destino[1]}`;
+  const origenTexto = origen ? `${origen[0]},${origen[1]}` : null;
+
+  if (proveedor === 'google') {
+    if (origenTexto) {
+      return `https://www.google.com/maps/dir/?api=1&origin=${encodeURIComponent(origenTexto)}&destination=${encodeURIComponent(destinoTexto)}&travelmode=driving`;
+    }
+    return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(destinoTexto)}`;
+  }
+
+  if (proveedor === 'waze') {
+    return `https://waze.com/ul?ll=${encodeURIComponent(destinoTexto)}&navigate=yes`;
+  }
+
+  if (origenTexto) {
+    return `https://www.openstreetmap.org/directions?engine=fossgis_osrm_car&route=${encodeURIComponent(origenTexto)}%3B${encodeURIComponent(destinoTexto)}`;
+  }
+  return `https://www.openstreetmap.org/?mlat=${destino[0]}&mlon=${destino[1]}#map=16/${destino[0]}/${destino[1]}`;
+}
+
+function formatDistanciaEstimacion(km: number) {
+  if (km < 1) return `${Math.max(100, Math.round(km * 1000))} m`;
+  return `${km.toFixed(1)} km`;
+}
+
+function formatTiempoEstimacion(minutos: number) {
+  if (minutos < 60) return `${minutos} min`;
+  const h = Math.floor(minutos / 60);
+  const m = minutos % 60;
+  return `${h} h ${m} min`;
+}
 
 function distanciaKm(aLat: number, aLng: number, bLat: number, bLng: number) {
   const R = 6371;
@@ -61,6 +104,8 @@ export default function ConductorPanel() {
   // Metrics
   const [gananciaHoy, setGananciaHoy] = useState(0);
   const [viajesHoy, setViajesHoy] = useState(0);
+  const [aceptandoViajeId, setAceptandoViajeId] = useState<string | null>(null);
+  const [procesandoViaje, setProcesandoViaje] = useState(false);
 
   // Map markers
   const [marcadores, setMarcadores] = useState<Array<{ id: string; lat: number; lng: number; tipo: 'usuario' | 'destino' | 'conductor'; label?: string }>>([]);
@@ -231,22 +276,37 @@ export default function ConductorPanel() {
   }, [estado, userId]);
 
   const aceptar = useCallback(async (viaje: ViajeDB) => {
+    setAceptandoViajeId(viaje.id);
     const { data, error } = await aceptarViaje(viaje.id, userId);
     if (error) {
       setSolicitudesDisponibles((prev) => prev.filter((item) => item.id !== viaje.id));
+      setAceptandoViajeId(null);
       return;
     }
     setViajeActivo(data);
     setSolicitudesDisponibles((prev) => prev.filter((item) => item.id !== viaje.id));
     setEstado('viaje_aceptado');
+    setAceptandoViajeId(null);
   }, [userId]);
 
   const rechazar = useCallback((viajeId: string) => {
     setSolicitudesDisponibles((prev) => prev.filter((item) => item.id !== viajeId));
   }, []);
 
+  const iniciarRecorrido = useCallback(async () => {
+    if (!viajeActivo || procesandoViaje) return;
+    setProcesandoViaje(true);
+    const { data } = await iniciarViaje(viajeActivo.id);
+    if (data) {
+      setViajeActivo(data);
+      setEstado('viaje_en_curso');
+    }
+    setProcesandoViaje(false);
+  }, [viajeActivo, procesandoViaje]);
+
   const finalizarViaje = useCallback(async () => {
-    if (!viajeActivo) return;
+    if (!viajeActivo || procesandoViaje) return;
+    setProcesandoViaje(true);
     const precio = Number(viajeActivo.precio_estimado) || 50;
     await completarViaje(viajeActivo.id, precio);
 
@@ -255,7 +315,28 @@ export default function ConductorPanel() {
     setViajesHoy((prev) => prev + 1);
     setViajeActivo(null);
     setEstado('online');
-  }, [viajeActivo]);
+    setProcesandoViaje(false);
+  }, [viajeActivo, procesandoViaje]);
+
+  const abrirNavegacion = useCallback((proveedor: ProveedorNavegacion, hacia: 'origen' | 'destino') => {
+    const destino =
+      hacia === 'origen'
+        ? (viajeActivo?.origen_lat && viajeActivo?.origen_lng ? [Number(viajeActivo.origen_lat), Number(viajeActivo.origen_lng)] as [number, number] : null)
+        : (viajeActivo?.destino_lat && viajeActivo?.destino_lng ? [Number(viajeActivo.destino_lat), Number(viajeActivo.destino_lng)] as [number, number] : null);
+
+    const url = construirUrlNavegacion(proveedor, userLocation, destino);
+    if (!url) return;
+    window.open(url, '_blank', 'noopener,noreferrer');
+  }, [viajeActivo, userLocation]);
+
+  const distanciaAlPasajeroKm = viajeActivo?.origen_lat && viajeActivo?.origen_lng && userLocation
+    ? distanciaKm(userLocation[0], userLocation[1], Number(viajeActivo.origen_lat), Number(viajeActivo.origen_lng))
+    : null;
+  const etaPasajeroMin = distanciaAlPasajeroKm !== null ? Math.max(2, Math.ceil((distanciaAlPasajeroKm / 25) * 60)) : null;
+  const distanciaRutaKm = viajeActivo?.origen_lat && viajeActivo?.origen_lng && viajeActivo?.destino_lat && viajeActivo?.destino_lng
+    ? distanciaKm(Number(viajeActivo.origen_lat), Number(viajeActivo.origen_lng), Number(viajeActivo.destino_lat), Number(viajeActivo.destino_lng))
+    : null;
+  const etaRutaMin = distanciaRutaKm !== null ? Math.max(4, Math.ceil((distanciaRutaKm / 30) * 60)) : null;
 
   const handleLogout = async () => {
     await supabase.from('conductores').update({ esta_disponible: false }).eq('id', userId);
@@ -275,6 +356,8 @@ export default function ConductorPanel() {
   return (
     <div className="relative w-full h-screen bg-[#050B14] overflow-hidden flex flex-col font-sans">
 
+      <div className="pointer-events-none absolute inset-0 z-[1] bg-[radial-gradient(ellipse_at_top,rgba(16,185,129,0.18),transparent_45%),radial-gradient(ellipse_at_bottom,rgba(45,212,191,0.10),transparent_40%)]" />
+
       {/* MAPA REAL */}
       <div className={`absolute inset-0 z-0 transition-opacity duration-1000 ${estado !== 'offline' ? 'opacity-100' : 'opacity-40 grayscale'}`}>
         <MapaLeaflet
@@ -287,14 +370,14 @@ export default function ConductorPanel() {
       </div>
 
       {/* HEADER */}
-      <header className="relative z-10 p-4 flex justify-between items-start">
-        <div className="bg-black/60 backdrop-blur-xl border border-white/10 p-3 rounded-2xl flex items-center gap-3 shadow-xl">
+      <header className="relative z-10 p-4 flex justify-between items-start gap-3">
+        <div className="bg-black/60 backdrop-blur-xl border border-white/10 p-3 rounded-2xl flex items-center gap-3 shadow-xl min-w-0">
           <div className="w-12 h-12 rounded-xl bg-gradient-to-br from-emerald-500 to-teal-400 p-[2px]">
             <div className="w-full h-full bg-[#111827] rounded-lg flex items-center justify-center overflow-hidden">
               <img src={`https://api.dicebear.com/7.x/avataaars/svg?seed=${nombreUsuario}`} alt="Avatar" className="w-10 h-10" />
             </div>
           </div>
-          <div>
+          <div className="min-w-0">
             <h2 className="text-white font-bold text-sm">{nombreUsuario}</h2>
             <div className="flex items-center gap-1.5 mt-0.5">
               <div className={`w-2 h-2 rounded-full ${estado !== 'offline' ? 'bg-emerald-500 animate-pulse' : 'bg-gray-500'}`} />
@@ -302,6 +385,11 @@ export default function ConductorPanel() {
                 {estado === 'offline' ? 'Desconectado' : estado === 'online' ? 'En línea' : 'En servicio'}
               </span>
             </div>
+            <IndicadorGPS
+              activo={Boolean(userLocation)}
+              lat={userLocation?.[0]}
+              lng={userLocation?.[1]}
+            />
           </div>
         </div>
         <button onClick={handleLogout} className="p-3 bg-black/60 backdrop-blur-xl border border-red-500/20 rounded-2xl text-red-400 hover:bg-red-500/10 transition shadow-xl">
@@ -374,8 +462,8 @@ export default function ConductorPanel() {
                     <button onClick={() => rechazar(solicitud.id)} className="col-span-2 py-3 rounded-xl bg-white/5 hover:bg-white/10 text-gray-300 font-bold transition-all border border-white/10">
                       Rechazar
                     </button>
-                    <button onClick={() => aceptar(solicitud)} className="col-span-3 py-3 rounded-xl bg-gradient-to-r from-teal-500 to-emerald-400 hover:from-teal-400 hover:to-emerald-300 text-black font-extrabold transition-all shadow-[0_0_20px_rgba(16,185,129,0.4)]">
-                      Aceptar
+                    <button onClick={() => aceptar(solicitud)} className="col-span-3 py-3 rounded-xl bg-gradient-to-r from-teal-500 to-emerald-400 hover:from-teal-400 hover:to-emerald-300 text-black font-extrabold transition-all shadow-[0_0_20px_rgba(16,185,129,0.4)] disabled:opacity-60" disabled={aceptandoViajeId === solicitud.id}>
+                      {aceptandoViajeId === solicitud.id ? 'Aceptando...' : 'Aceptar'}
                     </button>
                   </div>
                 </div>
@@ -392,6 +480,19 @@ export default function ConductorPanel() {
               <h3 className="text-lg font-bold text-white">
                 {estado === 'viaje_aceptado' ? 'Dirígete al pasajero' : 'Viaje en curso'}
               </h3>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3 mb-4">
+              <div className="rounded-xl border border-white/10 bg-white/5 p-3">
+                <p className="text-gray-400 text-[10px] uppercase font-semibold">ETA al pasajero</p>
+                <p className="text-white font-bold text-base">{etaPasajeroMin !== null ? formatTiempoEstimacion(etaPasajeroMin) : 'Calculando...'}</p>
+                <p className="text-gray-400 text-xs">{distanciaAlPasajeroKm !== null ? formatDistanciaEstimacion(distanciaAlPasajeroKm) : 'Sin GPS suficiente'}</p>
+              </div>
+              <div className="rounded-xl border border-white/10 bg-white/5 p-3">
+                <p className="text-gray-400 text-[10px] uppercase font-semibold">Ruta estimada</p>
+                <p className="text-white font-bold text-base">{etaRutaMin !== null ? formatTiempoEstimacion(etaRutaMin) : 'Calculando...'}</p>
+                <p className="text-gray-400 text-xs">{distanciaRutaKm !== null ? formatDistanciaEstimacion(distanciaRutaKm) : 'Sin coordenadas'}</p>
+              </div>
             </div>
 
             <div className="bg-white/5 border border-white/10 rounded-2xl p-4 mb-4">
@@ -416,12 +517,44 @@ export default function ConductorPanel() {
               <span className="text-2xl font-black text-emerald-400">${viajeActivo.precio_estimado}</span>
             </div>
 
-            <button
-              onClick={finalizarViaje}
-              className="w-full py-4 rounded-2xl bg-gradient-to-r from-emerald-600 to-emerald-500 hover:from-emerald-500 hover:to-emerald-400 text-white font-bold text-lg shadow-[0_0_20px_rgba(16,185,129,0.3)] transition-all"
-            >
-              ✅ Finalizar Viaje
-            </button>
+            <div className="grid grid-cols-3 gap-2 mb-4">
+              <button
+                onClick={() => abrirNavegacion('google', estado === 'viaje_aceptado' ? 'origen' : 'destino')}
+                className="py-2.5 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-white text-sm font-semibold transition"
+              >
+                Google Maps
+              </button>
+              <button
+                onClick={() => abrirNavegacion('waze', estado === 'viaje_aceptado' ? 'origen' : 'destino')}
+                className="py-2.5 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-white text-sm font-semibold transition"
+              >
+                Waze
+              </button>
+              <button
+                onClick={() => abrirNavegacion('osm', estado === 'viaje_aceptado' ? 'origen' : 'destino')}
+                className="py-2.5 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-white text-sm font-semibold transition"
+              >
+                OpenStreetMap
+              </button>
+            </div>
+
+            {estado === 'viaje_aceptado' ? (
+              <button
+                onClick={iniciarRecorrido}
+                disabled={procesandoViaje}
+                className="w-full py-4 rounded-2xl bg-gradient-to-r from-sky-600 to-cyan-500 hover:from-sky-500 hover:to-cyan-400 text-white font-bold text-lg shadow-[0_0_20px_rgba(14,165,233,0.35)] transition-all disabled:opacity-60"
+              >
+                {procesandoViaje ? 'Iniciando...' : 'Iniciar Viaje'}
+              </button>
+            ) : (
+              <button
+                onClick={finalizarViaje}
+                disabled={procesandoViaje}
+                className="w-full py-4 rounded-2xl bg-gradient-to-r from-emerald-600 to-emerald-500 hover:from-emerald-500 hover:to-emerald-400 text-white font-bold text-lg shadow-[0_0_20px_rgba(16,185,129,0.3)] transition-all disabled:opacity-60"
+              >
+                {procesandoViaje ? 'Finalizando...' : 'Finalizar Viaje'}
+              </button>
+            )}
           </div>
         )}
 
