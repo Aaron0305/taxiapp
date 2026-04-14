@@ -63,7 +63,7 @@ export default function LoginPage() {
             </svg>
           </div>
           <h1 className="text-3xl font-bold tracking-tight bg-gradient-to-r from-white to-gray-400 bg-clip-text text-transparent">
-            TaxiApp Web
+            Ixtlappp Web
           </h1>
           <p className="text-sm text-gray-400 mt-2">Bienvenido de vuelta, ingresa para rodar.</p>
         </div>

@@ -14,7 +14,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "TaxiApp Ixtlahuaca",
+  title: "Ixtlappp Ixtlahuaca",
   description: "Plataforma de taxis digitales para Ixtlahuaca, Estado de México",
 };
 

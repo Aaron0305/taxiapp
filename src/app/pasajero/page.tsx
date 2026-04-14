@@ -37,6 +37,7 @@ interface ConductorCercanoRaw {
 }
 
 const IXTLAHUACA_CENTER: [number, number] = [19.568, -99.768];
+const HISTORIAL_DESTINOS_MAX = 6;
 
 function distanciaKm(aLat: number, aLng: number, bLat: number, bLng: number) {
   const R = 6371;
@@ -117,12 +118,27 @@ export default function PasajeroPanel() {
   const [sugerenciasViaje, setSugerenciasViaje] = useState<SugerenciaViaje[]>([]);
   const [cargandoSugerencias, setCargandoSugerencias] = useState(false);
   const [conductoresCercanos, setConductoresCercanos] = useState(0);
+  const [cancelandoViaje, setCancelandoViaje] = useState(false);
+  const [historialDestinos, setHistorialDestinos] = useState<ResultadoBusqueda[]>([]);
 
   // Map markers
   const [marcadores, setMarcadores] = useState<Array<{ id: string; lat: number; lng: number; tipo: 'usuario' | 'destino' | 'conductor'; label?: string }>>([]);
 
   const searchTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const searchRequestIdRef = useRef(0);
+
+  const keyHistorialDestinos = useCallback((uid: string) => `ixtlappp:historial-destinos:${uid}`, []);
+
+  const guardarDestinoEnHistorial = useCallback((destino: ResultadoBusqueda) => {
+    if (!userId) return;
+
+    setHistorialDestinos((prev) => {
+      const sinDuplicados = prev.filter((item) => item.id !== destino.id);
+      const actualizado = [destino, ...sinDuplicados].slice(0, HISTORIAL_DESTINOS_MAX);
+      localStorage.setItem(keyHistorialDestinos(userId), JSON.stringify(actualizado));
+      return actualizado;
+    });
+  }, [userId, keyHistorialDestinos]);
 
   // === Auth & Session ===
   useEffect(() => {
@@ -141,6 +157,12 @@ export default function PasajeroPanel() {
           setViajeActivo(viaje);
           if (viaje.estado === 'solicitado') setPaso('esperando');
           else if (viaje.estado === 'aceptado' || viaje.estado === 'en_curso') setPaso('viaje_activo');
+        } else {
+          // Evita arrastrar destino visual de una sesión previa cuando no hay viaje activo.
+          setDestinoSeleccionado(null);
+          setQueryDestino('');
+          setResultados([]);
+          setPaso('inicio');
         }
       }
 
@@ -148,6 +170,27 @@ export default function PasajeroPanel() {
     };
     iniciar();
   }, [router]);
+
+  useEffect(() => {
+    if (!userId) return;
+
+    const raw = localStorage.getItem(keyHistorialDestinos(userId));
+    if (!raw) {
+      setHistorialDestinos([]);
+      return;
+    }
+
+    try {
+      const parsed = JSON.parse(raw) as ResultadoBusqueda[];
+      if (Array.isArray(parsed)) {
+        setHistorialDestinos(parsed.slice(0, HISTORIAL_DESTINOS_MAX));
+      } else {
+        setHistorialDestinos([]);
+      }
+    } catch {
+      setHistorialDestinos([]);
+    }
+  }, [userId, keyHistorialDestinos]);
 
   // === GPS del usuario — obtener ubicación real ===
   useEffect(() => {
@@ -226,11 +269,16 @@ export default function PasajeroPanel() {
           setPaso('inicio');
           setViajeActivo(null);
           setDestinoSeleccionado(null);
+          setQueryDestino('');
+          setResultados([]);
           setConductorLocation(null);
         }, 5000);
       } else if (viajeActualizado.estado === 'cancelado') {
         setPaso('inicio');
         setViajeActivo(null);
+        setDestinoSeleccionado(null);
+        setQueryDestino('');
+        setResultados([]);
         setConductorLocation(null);
       }
     });
@@ -414,6 +462,7 @@ export default function PasajeroPanel() {
     setQueryDestino(resultado.nombre);
     setResultados([]);
     setPaso('confirmar');
+    guardarDestinoEnHistorial(resultado);
 
     if (userLocation) {
       const precio = calcularPrecioEstimado(
@@ -422,7 +471,7 @@ export default function PasajeroPanel() {
       );
       setPrecioEstimado(precio);
     }
-  }, [userLocation]);
+  }, [userLocation, guardarDestinoEnHistorial]);
 
   const forzarIxtlahuaca = () => {
     const coords: [number, number] = [19.568, -99.768];
@@ -453,12 +502,19 @@ export default function PasajeroPanel() {
   }, [userLocation, destinoSeleccionado, userId, origenDireccion, precioEstimado]);
 
   const cancelar = useCallback(async () => {
-    if (!viajeActivo) return;
+    if (!viajeActivo || cancelandoViaje) return;
+
+    setCancelandoViaje(true);
     await cancelarViaje(viajeActivo.id);
     setViajeActivo(null);
     setDestinoSeleccionado(null);
+    setQueryDestino('');
+    setResultados([]);
+    setConductorLocation(null);
+    setPrecioEstimado(0);
     setPaso('inicio');
-  }, [viajeActivo]);
+    setCancelandoViaje(false);
+  }, [viajeActivo, cancelandoViaje]);
 
   const handleLogout = async () => {
     await supabase.auth.signOut();
@@ -579,6 +635,23 @@ export default function PasajeroPanel() {
                 <span className="text-gray-300 text-sm font-medium">Mercado</span>
               </button>
             </div>
+
+            {historialDestinos.length > 0 && (
+              <div className="mt-4">
+                <p className="text-xs uppercase text-gray-500 font-semibold mb-2">Historial reciente</p>
+                <div className="flex flex-wrap gap-2">
+                  {historialDestinos.map((destino) => (
+                    <button
+                      key={`hist-${destino.id}`}
+                      onClick={() => seleccionarDestino(destino)}
+                      className="px-3 py-2 rounded-lg bg-blue-500/10 border border-blue-400/20 text-blue-200 text-xs hover:bg-blue-500/20 transition"
+                    >
+                      {destino.nombre}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
         )}
 
@@ -728,7 +801,7 @@ export default function PasajeroPanel() {
               onClick={cancelar}
               className="px-8 py-3 rounded-full bg-white/5 hover:bg-red-500/10 border border-white/10 hover:border-red-500/50 text-gray-300 hover:text-red-400 transition-all font-medium"
             >
-              Cancelar solicitud
+              {cancelandoViaje ? 'Cancelando...' : 'Cancelar solicitud'}
             </button>
           </div>
         )}
@@ -756,6 +829,13 @@ export default function PasajeroPanel() {
                 <span className="text-white font-bold text-lg">${viajeActivo.precio_estimado}</span>
               </div>
             </div>
+
+            <button
+              onClick={cancelar}
+              className="w-full py-3 rounded-xl bg-white/5 hover:bg-red-500/10 border border-white/10 hover:border-red-500/50 text-gray-300 hover:text-red-400 transition-all font-medium"
+            >
+              {cancelandoViaje ? 'Cancelando viaje...' : 'Cancelar viaje'}
+            </button>
           </div>
         )}
 
@@ -766,7 +846,7 @@ export default function PasajeroPanel() {
               <span className="text-3xl">✅</span>
             </div>
             <h3 className="text-xl font-bold text-white mb-1">¡Viaje completado!</h3>
-            <p className="text-gray-400 mb-2">Gracias por viajar con TaxiApp</p>
+            <p className="text-gray-400 mb-2">Gracias por viajar con Ixtlappp</p>
             <p className="text-2xl font-black text-emerald-400">${viajeActivo.precio_final || viajeActivo.precio_estimado}</p>
           </div>
         )}

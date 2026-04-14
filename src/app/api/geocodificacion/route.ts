@@ -29,7 +29,7 @@ async function fetchJsonConTimeout(url: string, timeoutMs = 7000) {
     const response = await fetch(url, {
       headers: {
         'Accept-Language': 'es',
-        'User-Agent': 'TaxiApp-Ixtlahuaca/1.0 (contacto: soporte@taxiapp.local)',
+        'User-Agent': 'Ixtlappp-Ixtlahuaca/1.0 (contacto: soporte@ixtlappp.local)',
       },
       signal: controller.signal,
       cache: 'no-store',

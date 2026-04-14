@@ -1,4 +1,4 @@
-// Paleta de colores de TaxiApp Ixtlahuaca
+// Paleta de colores de Ixtlappp Ixtlahuaca
 export const COLORS = {
   // Primarios
   primary: '#3B82F6',       // blue-500

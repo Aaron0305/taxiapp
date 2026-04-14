@@ -1,5 +1,5 @@
 // Constantes globales de la aplicación
-export const APP_NAME = 'TaxiApp Ixtlahuaca';
+export const APP_NAME = 'Ixtlappp Ixtlahuaca';
 export const APP_VERSION = '0.1.0';
 
 export const RUTAS = {
