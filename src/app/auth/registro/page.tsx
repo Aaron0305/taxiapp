@@ -4,40 +4,52 @@ import { useState, useEffect } from 'react';
 import { supabase } from '@/backend/config/database';
 import { useRouter } from 'next/navigation';
 import { obtenerSesionSegura, obtenerUsuarioSeguro } from '@/services/auth/sessionSafe';
+import { useForm } from 'react-hook-form';
+import { zodResolver } from '@hookform/resolvers/zod';
+import { registroSchema, type RegistroFormData } from '@/schemas/auth';
+import { User, Phone, Mail, Lock, Loader2, CheckCircle2, AlertCircle, ShieldCheck } from 'lucide-react';
 
 export default function RegistroPage() {
   const router = useRouter();
-  const [nombre, setNombre] = useState('');
-  const [telefono, setTelefono] = useState('');
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
-  const [rol, setRol] = useState<'pasajero' | 'conductor'>('pasajero');
-  
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
 
-  const handleRegistro = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const {
+    register,
+    handleSubmit,
+    setValue,
+    watch,
+    formState: { errors },
+  } = useForm<RegistroFormData>({
+    resolver: zodResolver(registroSchema),
+    defaultValues: {
+      rol: 'pasajero',
+    },
+  });
+
+  const rol = watch('rol');
+
+  const onSubmit = async (dataForm: RegistroFormData) => {
     setLoading(true);
     setError(null);
     setSuccess(null);
 
     // Registrar en Supabase Auth pasándole los metadatos para que nuestro Trigger los capture
-    const { data, error } = await supabase.auth.signUp({
-      email,
-      password,
+    const { data, error: authError } = await supabase.auth.signUp({
+      email: dataForm.email,
+      password: dataForm.password,
       options: {
         data: {
-          nombre,
-          telefono,
-          rol,
+          nombre: dataForm.nombre,
+          telefono: dataForm.telefono,
+          rol: dataForm.rol,
         },
       },
     });
 
-    if (error) {
-      setError(error.message);
+    if (authError) {
+      setError(authError.message);
     } else {
       setSuccess('¡Registro exitoso! Revisa tu correo, o inicia sesión directamente.');
       setTimeout(() => {
@@ -70,15 +82,7 @@ export default function RegistroPage() {
       <div className="z-10 w-full max-w-md p-8 bg-white/5 backdrop-blur-xl border border-white/10 shadow-2xl rounded-3xl">
         <div className="text-center mb-8">
           <div className="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-gradient-to-br from-purple-500 to-emerald-400 mb-4 shadow-lg shadow-purple-500/30">
-            <svg 
-              className="w-8 h-8 text-white" 
-              fill="none" 
-              viewBox="0 0 24 24" 
-              stroke="currentColor" 
-              strokeWidth={2}
-            >
-              <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
-            </svg>
+            <ShieldCheck className="w-8 h-8 text-white" />
           </div>
           <h1 className="text-3xl font-bold tracking-tight bg-gradient-to-r from-white to-gray-400 bg-clip-text text-transparent">
             Crear Cuenta
@@ -87,25 +91,27 @@ export default function RegistroPage() {
         </div>
 
         {error && (
-          <div className="bg-red-500/10 border border-red-500/50 text-red-200 text-sm p-4 rounded-xl mb-6">
+          <div className="bg-red-500/10 border border-red-500/50 text-red-200 text-sm p-4 rounded-xl mb-6 flex items-center gap-3">
+            <AlertCircle className="w-5 h-5 flex-shrink-0" />
             {error}
           </div>
         )}
 
         {success && (
-          <div className="bg-emerald-500/10 border border-emerald-500/50 text-emerald-200 text-sm p-4 rounded-xl mb-6">
+          <div className="bg-emerald-500/10 border border-emerald-500/50 text-emerald-200 text-sm p-4 rounded-xl mb-6 flex items-center gap-3">
+            <CheckCircle2 className="w-5 h-5 flex-shrink-0" />
             {success}
           </div>
         )}
 
-        <form onSubmit={handleRegistro} className="space-y-4">
+        <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
           
           {/* SELECCIÓN DE ROL */}
           <div className="grid grid-cols-2 gap-4 mb-2">
             <button
               type="button"
-              onClick={() => setRol('pasajero')}
-              className={`py-3 rounded-xl border text-sm font-semibold transition-all ${
+              onClick={() => setValue('rol', 'pasajero')}
+              className={`py-3 rounded-xl border text-sm font-semibold transition-all flex items-center justify-center gap-2 ${
                 rol === 'pasajero' 
                   ? 'bg-blue-500/20 border-blue-500 text-blue-400' 
                   : 'bg-black/30 border-white/10 text-gray-400 hover:bg-white/5'
@@ -115,8 +121,8 @@ export default function RegistroPage() {
             </button>
             <button
               type="button"
-              onClick={() => setRol('conductor')}
-              className={`py-3 rounded-xl border text-sm font-semibold transition-all ${
+              onClick={() => setValue('rol', 'conductor')}
+              className={`py-3 rounded-xl border text-sm font-semibold transition-all flex items-center justify-center gap-2 ${
                 rol === 'conductor' 
                   ? 'bg-emerald-500/20 border-emerald-500 text-emerald-400' 
                   : 'bg-black/30 border-white/10 text-gray-400 hover:bg-white/5'
@@ -126,65 +132,106 @@ export default function RegistroPage() {
             </button>
           </div>
 
-          <div>
-            <label className="block text-sm font-medium text-gray-300 mb-1" htmlFor="nombre">
+          <div className="space-y-1">
+            <label className="block text-sm font-medium text-gray-300" htmlFor="nombre">
               Nombre Completo
             </label>
-            <input
-              id="nombre"
-              type="text"
-              className="w-full px-4 py-3 bg-black/30 border border-white/10 rounded-xl focus:ring-2 focus:ring-purple-500 focus:border-purple-500 outline-none transition-all text-white placeholder-gray-500"
-              placeholder="Juan Pérez"
-              value={nombre}
-              onChange={(e) => setNombre(e.target.value)}
-              required
-            />
+            <div className="relative">
+              <User className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-500" />
+              <input
+                {...register('nombre')}
+                id="nombre"
+                type="text"
+                className={`w-full pl-11 pr-4 py-3 bg-black/30 border ${errors.nombre ? 'border-red-500/50 ring-1 ring-red-500/20' : 'border-white/10'} rounded-xl focus:ring-2 focus:ring-purple-500 focus:border-purple-500 outline-none transition-all text-white placeholder-gray-500`}
+                placeholder="Juan Pérez"
+              />
+            </div>
+            {errors.nombre && <p className="text-xs text-red-400 mt-1 ml-1">{errors.nombre.message}</p>}
           </div>
 
-          <div>
-            <label className="block text-sm font-medium text-gray-300 mb-1" htmlFor="telefono">
-              Teléfono
+          <div className="space-y-1">
+            <label className="block text-sm font-medium text-gray-300" htmlFor="telefono">
+              Teléfono (10 dígitos)
             </label>
-            <input
-              id="telefono"
-              type="tel"
-              className="w-full px-4 py-3 bg-black/30 border border-white/10 rounded-xl focus:ring-2 focus:ring-purple-500 focus:border-purple-500 outline-none transition-all text-white placeholder-gray-500"
-              placeholder="55 1234 5678"
-              value={telefono}
-              onChange={(e) => setTelefono(e.target.value)}
-              required
-            />
+            <div className="relative">
+              <Phone className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-500" />
+              <input
+                {...register('telefono')}
+                id="telefono"
+                type="tel"
+                className={`w-full pl-11 pr-4 py-3 bg-black/30 border ${errors.telefono ? 'border-red-500/50 ring-1 ring-red-500/20' : 'border-white/10'} rounded-xl focus:ring-2 focus:ring-purple-500 focus:border-purple-500 outline-none transition-all text-white placeholder-gray-500`}
+                placeholder="5512345678"
+              />
+            </div>
+            {errors.telefono && <p className="text-xs text-red-400 mt-1 ml-1">{errors.telefono.message}</p>}
           </div>
 
-          <div>
-            <label className="block text-sm font-medium text-gray-300 mb-1" htmlFor="email">
+          <div className="space-y-1">
+            <label className="block text-sm font-medium text-gray-300" htmlFor="email">
               Correo Electrónico
             </label>
-            <input
-              id="email"
-              type="email"
-              className="w-full px-4 py-3 bg-black/30 border border-white/10 rounded-xl focus:ring-2 focus:ring-purple-500 focus:border-purple-500 outline-none transition-all text-white placeholder-gray-500"
-              placeholder="tu@correo.com"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              required
-            />
+            <div className="relative">
+              <Mail className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-500" />
+              <input
+                {...register('email')}
+                id="email"
+                type="email"
+                className={`w-full pl-11 pr-4 py-3 bg-black/30 border ${errors.email ? 'border-red-500/50 ring-1 ring-red-500/20' : 'border-white/10'} rounded-xl focus:ring-2 focus:ring-purple-500 focus:border-purple-500 outline-none transition-all text-white placeholder-gray-500`}
+                placeholder="tu@correo.com"
+              />
+            </div>
+            {errors.email && <p className="text-xs text-red-400 mt-1 ml-1">{errors.email.message}</p>}
           </div>
 
-          <div>
-            <label className="block text-sm font-medium text-gray-300 mb-1" htmlFor="password">
+          <div className="space-y-1">
+            <label className="block text-sm font-medium text-gray-300" htmlFor="password">
               Contraseña
             </label>
-            <input
-              id="password"
-              type="password"
-              className="w-full px-4 py-3 bg-black/30 border border-white/10 rounded-xl focus:ring-2 focus:ring-purple-500 focus:border-purple-500 outline-none transition-all text-white placeholder-gray-500"
-              placeholder="Minimo 6 caracteres"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              minLength={6}
-              required
-            />
+            <div className="relative">
+              <Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-500" />
+              <input
+                {...register('password')}
+                id="password"
+                type="password"
+                className={`w-full pl-11 pr-4 py-3 bg-black/30 border ${errors.password ? 'border-red-500/50 ring-1 ring-red-500/20' : 'border-white/10'} rounded-xl focus:ring-2 focus:ring-purple-500 focus:border-purple-500 outline-none transition-all text-white placeholder-gray-500`}
+                placeholder="Mínimo 8 caracteres"
+              />
+            </div>
+            {errors.password && <p className="text-xs text-red-400 mt-1 ml-1">{errors.password.message}</p>}
+          </div>
+
+          <div className="space-y-1">
+            <label className="block text-sm font-medium text-gray-300" htmlFor="confirmPassword">
+              Confirmar Contraseña
+            </label>
+            <div className="relative">
+              <ShieldCheck className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-500" />
+              <input
+                {...register('confirmPassword')}
+                id="confirmPassword"
+                type="password"
+                className={`w-full pl-11 pr-4 py-3 bg-black/30 border ${errors.confirmPassword ? 'border-red-500/50 ring-1 ring-red-500/20' : 'border-white/10'} rounded-xl focus:ring-2 focus:ring-purple-500 focus:border-purple-500 outline-none transition-all text-white placeholder-gray-500`}
+                placeholder="Repite tu contraseña"
+              />
+            </div>
+            {errors.confirmPassword && <p className="text-xs text-red-400 mt-1 ml-1">{errors.confirmPassword.message}</p>}
+          </div>
+
+          <div className="flex items-start gap-3 py-2">
+            <div className="flex items-center h-5">
+              <input
+                {...register('aceptaTerminos')}
+                id="aceptaTerminos"
+                type="checkbox"
+                className="w-5 h-5 rounded border-white/10 bg-black/30 text-purple-600 focus:ring-purple-500 focus:ring-offset-gray-900"
+              />
+            </div>
+            <div className="text-sm">
+              <label htmlFor="aceptaTerminos" className="text-gray-400">
+                Acepto los <a href="#" className="text-purple-400 hover:underline">Términos y Condiciones</a> y la <a href="#" className="text-purple-400 hover:underline">Política de Privacidad</a>.
+              </label>
+              {errors.aceptaTerminos && <p className="text-xs text-red-400 mt-1">{errors.aceptaTerminos.message}</p>}
+            </div>
           </div>
 
           <button
@@ -195,10 +242,7 @@ export default function RegistroPage() {
             <span className="relative z-10 flex items-center justify-center gap-2">
               {loading ? (
                 <>
-                  <svg className="animate-spin h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                  </svg>
+                  <Loader2 className="animate-spin h-5 w-5 text-white" />
                   Creando cuenta...
                 </>
               ) : (
