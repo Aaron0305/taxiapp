@@ -64,10 +64,42 @@ export async function aceptarViaje(viajeId: string, conductorId: string) {
     .from('viajes')
     .update({
       conductor_id: conductorId,
-      estado: 'aceptado',
-      iniciado_en: new Date().toISOString(),
     })
     .eq('id', viajeId)
+    .eq('estado', 'solicitado')
+    .is('conductor_id', null)
+    .select()
+    .single();
+
+  return { data, error };
+}
+
+// --- Confirmación del pasajero después de que conductor toma viaje ---
+export async function confirmarConductorPorPasajero(viajeId: string, pasajeroId: string) {
+  const { data, error } = await supabase
+    .from('viajes')
+    .update({
+      estado: 'aceptado',
+    })
+    .eq('id', viajeId)
+    .eq('pasajero_id', pasajeroId)
+    .eq('estado', 'solicitado')
+    .not('conductor_id', 'is', null)
+    .select()
+    .single();
+
+  return { data, error };
+}
+
+// --- Pasajero rechaza conductor asignado y vuelve a buscar ---
+export async function rechazarConductorPorPasajero(viajeId: string, pasajeroId: string) {
+  const { data, error } = await supabase
+    .from('viajes')
+    .update({
+      conductor_id: null,
+    })
+    .eq('id', viajeId)
+    .eq('pasajero_id', pasajeroId)
     .eq('estado', 'solicitado')
     .select()
     .single();
@@ -79,8 +111,9 @@ export async function aceptarViaje(viajeId: string, conductorId: string) {
 export async function iniciarViaje(viajeId: string) {
   const { data, error } = await supabase
     .from('viajes')
-    .update({ estado: 'en_curso' })
+    .update({ estado: 'en_curso', iniciado_en: new Date().toISOString() })
     .eq('id', viajeId)
+    .eq('estado', 'aceptado')
     .select()
     .single();
 
@@ -121,6 +154,7 @@ export async function obtenerViajesSolicitados() {
     .from('viajes')
     .select('*')
     .eq('estado', 'solicitado')
+    .is('conductor_id', null)
     .order('creado_en', { ascending: false })
     .limit(10);
 
@@ -147,7 +181,7 @@ export async function obtenerViajeActivoConductor(conductorId: string) {
     .from('viajes')
     .select('*')
     .eq('conductor_id', conductorId)
-    .in('estado', ['aceptado', 'en_curso'])
+    .in('estado', ['solicitado', 'aceptado', 'en_curso'])
     .order('creado_en', { ascending: false })
     .limit(1)
     .maybeSingle();

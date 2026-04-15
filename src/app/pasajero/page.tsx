@@ -7,6 +7,8 @@ import dynamic from 'next/dynamic';
 import {
   crearViaje,
   cancelarViaje,
+  confirmarConductorPorPasajero,
+  rechazarConductorPorPasajero,
   obtenerViajeActivoPasajero,
   suscribirseViaje,
   calcularPrecioEstimado,
@@ -20,7 +22,7 @@ import { obtenerSesionSegura, obtenerUsuarioSeguro } from '@/services/auth/sessi
 // Dynamic import Leaflet (avoid SSR issues)
 const MapaLeaflet = dynamic(() => import('@/components/comun/MapaLeaflet'), { ssr: false });
 
-type Paso = 'inicio' | 'buscando_destino' | 'confirmar' | 'esperando' | 'viaje_activo' | 'completado';
+type Paso = 'inicio' | 'buscando_destino' | 'confirmar' | 'esperando' | 'confirmar_conductor' | 'viaje_activo' | 'completado';
 
 interface SugerenciaViaje {
   id: string;
@@ -154,6 +156,7 @@ export default function PasajeroPanel() {
   const [conductoresZonaLista, setConductoresZonaLista] = useState<ConductorZona[]>([]);
   const [actualizandoZona, setActualizandoZona] = useState(false);
   const [cancelandoViaje, setCancelandoViaje] = useState(false);
+  const [procesandoConfirmacionConductor, setProcesandoConfirmacionConductor] = useState(false);
   const [historialDestinos, setHistorialDestinos] = useState<ResultadoBusqueda[]>([]);
   const [rutaActiva, setRutaActiva] = useState<PuntoRuta[]>([]);
   const [resumenRuta, setResumenRuta] = useState<{ distanciaKm: number; duracionMin: number } | null>(null);
@@ -178,6 +181,25 @@ export default function PasajeroPanel() {
     const destinoViaje = viaje.destino_lat != null && viaje.destino_lng != null
       ? [Number(viaje.destino_lat), Number(viaje.destino_lng)] as PuntoRuta
       : null;
+
+    if (viaje.estado === 'solicitado' && viaje.conductor_id) {
+      if (!conductorPosicion || !origenViaje) {
+        setRutaActiva([]);
+        setResumenRuta(null);
+        return;
+      }
+
+      const ruta = await obtenerRutaConductor(conductorPosicion, origenViaje);
+      if (!ruta) {
+        setRutaActiva([conductorPosicion, origenViaje]);
+        setResumenRuta(null);
+        return;
+      }
+
+      setRutaActiva(ruta.puntos);
+      setResumenRuta({ distanciaKm: ruta.distanciaKm, duracionMin: ruta.duracionMin });
+      return;
+    }
 
     if (viaje.estado === 'aceptado') {
       if (!conductorPosicion || !origenViaje) {
@@ -361,7 +383,10 @@ export default function PasajeroPanel() {
         const { data: viaje } = await obtenerViajeActivoPasajero(user.id);
         if (viaje) {
           setViajeActivo(viaje);
-          if (viaje.estado === 'solicitado') setPaso('esperando');
+          if (viaje.estado === 'solicitado') {
+            if (viaje.conductor_id) setPaso('confirmar_conductor');
+            else setPaso('esperando');
+          }
           else if (viaje.estado === 'aceptado' || viaje.estado === 'en_curso') setPaso('viaje_activo');
         } else {
           // Evita arrastrar destino visual de una sesión previa cuando no hay viaje activo.
@@ -505,6 +530,10 @@ export default function PasajeroPanel() {
 
     const channel = suscribirseViaje(viajeActivo.id, (viajeActualizado) => {
       setViajeActivo(viajeActualizado);
+      if (viajeActualizado.estado === 'solicitado') {
+        if (viajeActualizado.conductor_id) setPaso('confirmar_conductor');
+        else setPaso('esperando');
+      }
       if (viajeActualizado.estado === 'aceptado') setPaso('viaje_activo');
       else if (viajeActualizado.estado === 'completado') {
         setPaso('completado');
@@ -552,7 +581,7 @@ export default function PasajeroPanel() {
   }, [viajeActivo?.id, viajeActivo?.conductor_id, viajeActivo?.estado]);
 
   useEffect(() => {
-    if (!viajeActivo || (paso !== 'viaje_activo' && paso !== 'esperando')) {
+    if (!viajeActivo || (paso !== 'viaje_activo' && paso !== 'esperando' && paso !== 'confirmar_conductor')) {
       setRutaActiva([]);
       setResumenRuta(null);
       return;
@@ -821,9 +850,46 @@ export default function PasajeroPanel() {
     setResultados([]);
     setConductorLocation(null);
     setPrecioEstimado(0);
+    setRutaActiva([]);
+    setResumenRuta(null);
     setPaso('inicio');
     setCancelandoViaje(false);
   }, [viajeActivo, cancelandoViaje]);
+
+  const aceptarConductor = useCallback(async () => {
+    if (!viajeActivo || !userId || procesandoConfirmacionConductor) return;
+    setProcesandoConfirmacionConductor(true);
+
+    const { data, error: err } = await confirmarConductorPorPasajero(viajeActivo.id, userId);
+    if (err || !data) {
+      setError('No pudimos confirmar el conductor. Intenta nuevamente.');
+      setProcesandoConfirmacionConductor(false);
+      return;
+    }
+
+    setViajeActivo(data);
+    setPaso('viaje_activo');
+    setError(null);
+    setProcesandoConfirmacionConductor(false);
+  }, [viajeActivo, userId, procesandoConfirmacionConductor]);
+
+  const rechazarConductor = useCallback(async () => {
+    if (!viajeActivo || !userId || procesandoConfirmacionConductor) return;
+    setProcesandoConfirmacionConductor(true);
+
+    const { data, error: err } = await rechazarConductorPorPasajero(viajeActivo.id, userId);
+    if (err || !data) {
+      setError('No pudimos rechazar este conductor. Intenta nuevamente.');
+      setProcesandoConfirmacionConductor(false);
+      return;
+    }
+
+    setViajeActivo(data);
+    setPaso('esperando');
+    setConductorLocation(null);
+    setError(null);
+    setProcesandoConfirmacionConductor(false);
+  }, [viajeActivo, userId, procesandoConfirmacionConductor]);
 
   const handleLogout = async () => {
     await supabase.auth.signOut();
@@ -871,22 +937,22 @@ export default function PasajeroPanel() {
       )}
 
       {/* HEADER */}
-      <header className="relative z-10 p-4 flex justify-between items-center">
-        <div className="bg-black/60 backdrop-blur-xl border border-white/10 p-3 rounded-2xl flex items-center gap-3 shadow-xl">
+      <header className="relative z-10 p-3 md:p-4 flex justify-between items-center gap-2 md:gap-3">
+        <div className="bg-black/60 backdrop-blur-xl border border-white/10 p-2.5 md:p-3 rounded-2xl flex items-center gap-2.5 md:gap-3 shadow-xl min-w-0 max-w-[calc(100%-56px)] md:max-w-none">
           <div className="w-10 h-10 rounded-full bg-gradient-to-tr from-blue-500 to-indigo-400 p-[2px]">
             <div className="w-full h-full bg-[#111827] rounded-full flex items-center justify-center overflow-hidden">
               <img src={`https://api.dicebear.com/7.x/avataaars/svg?seed=${nombreUsuario}`} alt="Avatar" className="w-8 h-8" />
             </div>
           </div>
-          <div>
-            <h2 className="text-white font-bold text-sm leading-tight">{nombreUsuario}</h2>
+          <div className="min-w-0">
+            <h2 className="text-white font-bold text-xs md:text-sm leading-tight truncate">{nombreUsuario}</h2>
             <p className="text-emerald-400 text-[10px] font-semibold tracking-wide">PASAJERO</p>
-            <p className="text-[10px] text-blue-300 mt-0.5">
+            <p className="text-[10px] text-blue-300 mt-0.5 truncate">
               Conductores en tu zona ({RADIO_ZONA_KM} km): {actualizandoZona ? 'actualizando...' : conductoresZonaRealtime}
             </p>
           </div>
         </div>
-        <button onClick={handleLogout} className="p-3 bg-black/60 backdrop-blur-xl hover:bg-white/10 border border-white/10 rounded-2xl transition-all text-gray-400 hover:text-white shadow-xl">
+        <button onClick={handleLogout} className="p-2.5 md:p-3 bg-black/60 backdrop-blur-xl hover:bg-white/10 border border-white/10 rounded-2xl transition-all text-gray-400 hover:text-white shadow-xl shrink-0">
           <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
           </svg>
@@ -894,11 +960,11 @@ export default function PasajeroPanel() {
       </header>
 
       {/* CONTENIDO INFERIOR */}
-      <main className="relative z-10 flex-1 flex flex-col justify-end pointer-events-none">
+      <main className="relative z-10 flex-1 flex flex-col justify-end pointer-events-none p-0">
 
         {/* === PASO: INICIO === */}
         {paso === 'inicio' && (
-          <div className="pointer-events-auto bg-[#0f1629]/95 backdrop-blur-2xl border-t border-white/10 p-6 rounded-t-[2rem] shadow-2xl">
+          <div className="pointer-events-auto bg-[#0f1629]/95 backdrop-blur-2xl border-t border-white/10 p-4 md:p-6 rounded-t-[1.5rem] md:rounded-t-[2rem] shadow-2xl max-h-[72vh] overflow-y-auto">
             <h3 className="text-xl font-bold text-white mb-4">¿A dónde vamos?</h3>
 
             <div className="relative mb-4">
@@ -991,7 +1057,7 @@ export default function PasajeroPanel() {
 
         {/* === PASO: BUSCANDO DESTINO === */}
         {paso === 'buscando_destino' && (
-          <div className="pointer-events-auto bg-[#0f1629]/95 backdrop-blur-2xl border-t border-white/10 p-6 rounded-t-[2rem] shadow-2xl max-h-[70vh] overflow-y-auto">
+          <div className="pointer-events-auto bg-[#0f1629]/95 backdrop-blur-2xl border-t border-white/10 p-4 md:p-6 rounded-t-[1.5rem] md:rounded-t-[2rem] shadow-2xl max-h-[72vh] overflow-y-auto">
             <div className="flex items-center gap-3 mb-4">
               <button onClick={() => { setPaso('inicio'); setResultados([]); }} className="p-2 bg-white/10 rounded-full">
                 <svg className="w-5 h-5 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" /></svg>
@@ -1037,7 +1103,7 @@ export default function PasajeroPanel() {
 
         {/* === PASO: CONFIRMAR VIAJE === */}
         {paso === 'confirmar' && destinoSeleccionado && (
-          <div className="pointer-events-auto bg-[#0f1629]/95 backdrop-blur-2xl border-t border-white/10 p-6 rounded-t-[2rem] shadow-2xl max-h-[78vh] overflow-y-auto">
+          <div className="pointer-events-auto bg-[#0f1629]/95 backdrop-blur-2xl border-t border-white/10 p-4 md:p-6 rounded-t-[1.5rem] md:rounded-t-[2rem] shadow-2xl max-h-[78vh] overflow-y-auto">
             <h3 className="text-lg font-bold text-white mb-4">Confirmar viaje</h3>
 
             <div className="space-y-3 mb-6">
@@ -1101,16 +1167,16 @@ export default function PasajeroPanel() {
 
             {error && <p className="text-red-400 text-sm mb-4 bg-red-500/10 p-3 rounded-xl">{error}</p>}
 
-            <div className="grid grid-cols-5 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-5 gap-3">
               <button
                 onClick={() => { setPaso('inicio'); setDestinoSeleccionado(null); }}
-                className="col-span-2 py-4 rounded-2xl bg-white/5 hover:bg-white/10 text-gray-300 font-bold transition-all border border-white/10"
+                className="sm:col-span-2 py-4 rounded-2xl bg-white/5 hover:bg-white/10 text-gray-300 font-bold transition-all border border-white/10"
               >
                 Cancelar
               </button>
               <button
                 onClick={pedirTaxi}
-                className="col-span-3 py-4 rounded-2xl bg-gradient-to-r from-blue-600 to-blue-500 hover:from-blue-500 hover:to-blue-400 text-white font-bold text-lg shadow-[0_0_20px_rgba(37,99,235,0.3)] transition-all"
+                className="sm:col-span-3 py-4 rounded-2xl bg-gradient-to-r from-blue-600 to-blue-500 hover:from-blue-500 hover:to-blue-400 text-white font-bold text-lg shadow-[0_0_20px_rgba(37,99,235,0.3)] transition-all"
               >
                 🚕 Pedir Taxi
               </button>
@@ -1120,7 +1186,7 @@ export default function PasajeroPanel() {
 
         {/* === PASO: ESPERANDO CONDUCTOR === */}
         {paso === 'esperando' && (
-          <div className="pointer-events-auto bg-[#0f1629]/95 backdrop-blur-2xl border-t border-blue-500/30 p-8 rounded-t-[2rem] shadow-[0_0_50px_rgba(59,130,246,0.15)] flex flex-col items-center text-center">
+          <div className="pointer-events-auto bg-[#0f1629]/95 backdrop-blur-2xl border-t border-blue-500/30 p-5 md:p-8 rounded-t-[1.5rem] md:rounded-t-[2rem] shadow-[0_0_50px_rgba(59,130,246,0.15)] flex flex-col items-center text-center max-h-[72vh] overflow-y-auto">
             <div className="relative mb-6">
               <div className="absolute inset-0 bg-blue-500 blur-xl opacity-30 rounded-full animate-pulse" />
               <div className="w-20 h-20 bg-gradient-to-br from-[#1e293b] to-[#0f172a] rounded-full border-2 border-blue-500/50 flex items-center justify-center relative z-10">
@@ -1150,9 +1216,52 @@ export default function PasajeroPanel() {
           </div>
         )}
 
+        {/* === PASO: CONFIRMAR CONDUCTOR ASIGNADO === */}
+        {paso === 'confirmar_conductor' && viajeActivo && (
+          <div className="pointer-events-auto bg-[#0f1629]/95 backdrop-blur-2xl border-t border-cyan-500/30 p-4 md:p-6 rounded-t-[1.5rem] md:rounded-t-[2rem] shadow-2xl max-h-[72vh] overflow-y-auto">
+            <div className="flex items-center gap-2 mb-3">
+              <div className="w-3 h-3 rounded-full bg-cyan-400 animate-pulse" />
+              <h3 className="text-lg font-bold text-white">Conductor encontrado</h3>
+            </div>
+
+            <p className="text-gray-300 text-sm mb-4">
+              Un conductor tomó tu solicitud. Confirma para que inicie rumbo a tu ubicación.
+            </p>
+
+            <div className="rounded-2xl border border-white/10 bg-white/5 p-4 mb-4">
+              <p className="text-gray-400 text-xs uppercase mb-1">Destino</p>
+              <p className="text-white text-sm font-medium mb-3">{viajeActivo.destino_direccion}</p>
+              {resumenRuta && rutaActiva.length > 1 && (
+                <p className="text-cyan-200 text-sm">
+                  Ruta estimada conductor → tú: {resumenRuta.distanciaKm.toFixed(1)} km · {resumenRuta.duracionMin} min
+                </p>
+              )}
+            </div>
+
+            {error && <p className="text-red-400 text-sm mb-3">{error}</p>}
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <button
+                onClick={rechazarConductor}
+                disabled={procesandoConfirmacionConductor}
+                className="py-3 rounded-xl bg-white/5 hover:bg-red-500/10 border border-white/10 hover:border-red-500/50 text-gray-300 hover:text-red-400 transition-all font-semibold disabled:opacity-60"
+              >
+                {procesandoConfirmacionConductor ? 'Procesando...' : 'Rechazar conductor'}
+              </button>
+              <button
+                onClick={aceptarConductor}
+                disabled={procesandoConfirmacionConductor}
+                className="py-3 rounded-xl bg-gradient-to-r from-cyan-600 to-blue-500 hover:from-cyan-500 hover:to-blue-400 text-white font-bold transition-all disabled:opacity-60"
+              >
+                {procesandoConfirmacionConductor ? 'Confirmando...' : 'Aceptar conductor'}
+              </button>
+            </div>
+          </div>
+        )}
+
         {/* === PASO: VIAJE ACTIVO === */}
         {paso === 'viaje_activo' && viajeActivo && (
-          <div className="pointer-events-auto bg-[#0f1629]/95 backdrop-blur-2xl border-t border-emerald-500/30 p-6 rounded-t-[2rem] shadow-2xl">
+          <div className="pointer-events-auto bg-[#0f1629]/95 backdrop-blur-2xl border-t border-emerald-500/30 p-4 md:p-6 rounded-t-[1.5rem] md:rounded-t-[2rem] shadow-2xl max-h-[72vh] overflow-y-auto">
             <div className="flex items-center gap-2 mb-4">
               <div className="w-3 h-3 rounded-full bg-emerald-500 animate-pulse" />
               <h3 className="text-lg font-bold text-white">

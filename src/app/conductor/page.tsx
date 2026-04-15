@@ -108,6 +108,7 @@ export default function ConductorPanel() {
   const [viajesHoy, setViajesHoy] = useState(0);
   const [aceptandoViajeId, setAceptandoViajeId] = useState<string | null>(null);
   const [procesandoViaje, setProcesandoViaje] = useState(false);
+  const [estadoSolicitud, setEstadoSolicitud] = useState<'esperando_pasajero' | null>(null);
   const [rutaActiva, setRutaActiva] = useState<Array<[number, number]>>([]);
   const [resumenRuta, setResumenRuta] = useState<{ distanciaKm: number; duracionMin: number } | null>(null);
 
@@ -116,6 +117,8 @@ export default function ConductorPanel() {
 
   // === Auth & Session ===
   useEffect(() => {
+    let canalViajeConductor: ReturnType<typeof supabase.channel> | null = null;
+
     const iniciar = async () => {
       const { session } = await obtenerSesionSegura();
       if (!session) { router.push('/auth/login'); return; }
@@ -139,18 +142,64 @@ export default function ConductorPanel() {
         const { data: viaje } = await obtenerViajeActivoConductor(user.id);
         if (viaje) {
           setViajeActivo(viaje);
-          setEstado(viaje.estado === 'en_curso' ? 'viaje_en_curso' : 'viaje_aceptado');
+          if (viaje.estado === 'en_curso') {
+            setEstado('viaje_en_curso');
+            setEstadoSolicitud(null);
+          } else if (viaje.estado === 'aceptado') {
+            setEstado('viaje_aceptado');
+            setEstadoSolicitud(null);
+          } else if (viaje.estado === 'solicitado' && viaje.conductor_id) {
+            setEstado('viaje_aceptado');
+            setEstadoSolicitud('esperando_pasajero');
+          }
         }
 
         // Load today's metrics
         const m = await obtenerMetricasConductorHoy(user.id);
         setGananciaHoy(m.ganancia);
         setViajesHoy(m.totalViajes);
+
+        canalViajeConductor = supabase.channel(`viaje-conductor-${user.id}`)
+          .on(
+            'postgres_changes',
+            {
+              event: 'UPDATE',
+              schema: 'public',
+              table: 'viajes',
+              filter: `conductor_id=eq.${user.id}`,
+            },
+            (payload) => {
+              const nuevoViaje = payload.new as ViajeDB;
+              setViajeActivo(nuevoViaje);
+
+              if (nuevoViaje.estado === 'solicitado') {
+                setEstado('viaje_aceptado');
+                setEstadoSolicitud('esperando_pasajero');
+              } else if (nuevoViaje.estado === 'aceptado') {
+                setEstado('viaje_aceptado');
+                setEstadoSolicitud(null);
+              } else if (nuevoViaje.estado === 'en_curso') {
+                setEstado('viaje_en_curso');
+                setEstadoSolicitud(null);
+              } else if (nuevoViaje.estado === 'cancelado' || nuevoViaje.estado === 'completado') {
+                setViajeActivo(null);
+                setEstado('online');
+                setEstadoSolicitud(null);
+              }
+            }
+          )
+          .subscribe();
       }
 
       setLoading(false);
     };
     iniciar();
+
+    return () => {
+      if (canalViajeConductor) {
+        supabase.removeChannel(canalViajeConductor);
+      }
+    };
   }, [router]);
 
   // === GPS conductor — obtener ubicación real ===
@@ -289,6 +338,25 @@ export default function ConductorPanel() {
       return;
     }
 
+    if (viajeActivo.estado === 'solicitado' && viajeActivo.conductor_id) {
+      if (!userLocation || !origenViaje) {
+        setRutaActiva([]);
+        setResumenRuta(null);
+        return;
+      }
+
+      const ruta = await obtenerRutaConductor(userLocation, origenViaje);
+      if (!ruta) {
+        setRutaActiva([userLocation, origenViaje]);
+        setResumenRuta(null);
+        return;
+      }
+
+      setRutaActiva(ruta.puntos);
+      setResumenRuta({ distanciaKm: ruta.distanciaKm, duracionMin: ruta.duracionMin });
+      return;
+    }
+
     if (estado === 'viaje_en_curso') {
       if (!userLocation || !destinoViaje) {
         setRutaActiva([]);
@@ -399,6 +467,7 @@ export default function ConductorPanel() {
     setViajeActivo(data);
     setSolicitudesDisponibles((prev) => prev.filter((item) => item.id !== viaje.id));
     setEstado('viaje_aceptado');
+    setEstadoSolicitud('esperando_pasajero');
     setAceptandoViajeId(null);
   }, [userId]);
 
@@ -407,15 +476,16 @@ export default function ConductorPanel() {
   }, []);
 
   const iniciarRecorrido = useCallback(async () => {
-    if (!viajeActivo || procesandoViaje) return;
+    if (!viajeActivo || procesandoViaje || estadoSolicitud === 'esperando_pasajero') return;
     setProcesandoViaje(true);
     const { data } = await iniciarViaje(viajeActivo.id);
     if (data) {
       setViajeActivo(data);
       setEstado('viaje_en_curso');
+      setEstadoSolicitud(null);
     }
     setProcesandoViaje(false);
-  }, [viajeActivo, procesandoViaje]);
+  }, [viajeActivo, procesandoViaje, estadoSolicitud]);
 
   const finalizarViaje = useCallback(async () => {
     if (!viajeActivo || procesandoViaje) return;
@@ -428,6 +498,7 @@ export default function ConductorPanel() {
     setViajesHoy((prev) => prev + 1);
     setViajeActivo(null);
     setEstado('online');
+    setEstadoSolicitud(null);
     setProcesandoViaje(false);
   }, [viajeActivo, procesandoViaje]);
 
@@ -485,15 +556,15 @@ export default function ConductorPanel() {
       </div>
 
       {/* HEADER */}
-      <header className="relative z-10 p-4 flex justify-between items-start gap-3">
-        <div className="bg-black/60 backdrop-blur-xl border border-white/10 p-3 rounded-2xl flex items-center gap-3 shadow-xl min-w-0">
+      <header className="relative z-10 p-3 md:p-4 flex justify-between items-start gap-2 md:gap-3">
+        <div className="bg-black/60 backdrop-blur-xl border border-white/10 p-2.5 md:p-3 rounded-2xl flex items-center gap-2.5 md:gap-3 shadow-xl min-w-0 max-w-[calc(100%-56px)] md:max-w-none">
           <div className="w-12 h-12 rounded-xl bg-gradient-to-br from-emerald-500 to-teal-400 p-[2px]">
             <div className="w-full h-full bg-[#111827] rounded-lg flex items-center justify-center overflow-hidden">
               <img src={`https://api.dicebear.com/7.x/avataaars/svg?seed=${nombreUsuario}`} alt="Avatar" className="w-10 h-10" />
             </div>
           </div>
           <div className="min-w-0">
-            <h2 className="text-white font-bold text-sm">{nombreUsuario}</h2>
+            <h2 className="text-white font-bold text-xs md:text-sm truncate">{nombreUsuario}</h2>
             <div className="flex items-center gap-1.5 mt-0.5">
               <div className={`w-2 h-2 rounded-full ${estado !== 'offline' ? 'bg-emerald-500 animate-pulse' : 'bg-gray-500'}`} />
               <span className="text-gray-400 text-xs font-medium">
@@ -507,7 +578,7 @@ export default function ConductorPanel() {
             />
           </div>
         </div>
-        <button onClick={handleLogout} className="p-3 bg-black/60 backdrop-blur-xl border border-red-500/20 rounded-2xl text-red-400 hover:bg-red-500/10 transition shadow-xl">
+        <button onClick={handleLogout} className="p-2.5 md:p-3 bg-black/60 backdrop-blur-xl border border-red-500/20 rounded-2xl text-red-400 hover:bg-red-500/10 transition shadow-xl shrink-0">
           <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
           </svg>
@@ -515,8 +586,8 @@ export default function ConductorPanel() {
       </header>
 
       {/* METRICS BAR */}
-      <div className="relative z-10 px-4 mt-1">
-        <div className="grid grid-cols-3 gap-3">
+      <div className="relative z-10 px-3 md:px-4 mt-1">
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 md:gap-3">
           <div className="bg-black/50 backdrop-blur-md border border-white/5 rounded-2xl p-3 flex flex-col">
             <span className="text-gray-400 text-[10px] font-semibold uppercase tracking-wider mb-0.5">Ganancias hoy</span>
             <span className="text-xl font-bold text-white">${gananciaHoy.toFixed(2)}</span>
@@ -535,11 +606,11 @@ export default function ConductorPanel() {
       </div>
 
       {/* MAIN CONTENT */}
-      <main className="relative z-20 flex-1 flex flex-col justify-end p-4 pb-8 pointer-events-none">
+      <main className="relative z-20 flex-1 flex flex-col justify-end p-3 md:p-4 pb-6 md:pb-8 pointer-events-none">
 
         {/* SOLICITUD PENDIENTE */}
         {solicitudesCercanas.length > 0 && estado === 'online' && (
-          <div className="pointer-events-auto bg-black/80 backdrop-blur-2xl border-2 border-teal-500/50 p-6 rounded-[2rem] shadow-[0_0_60px_rgba(20,184,166,0.2)] w-full mb-4 animate-in slide-in-from-bottom-10 fade-in duration-300 max-h-[55vh] overflow-y-auto">
+          <div className="pointer-events-auto bg-black/80 backdrop-blur-2xl border-2 border-teal-500/50 p-4 md:p-6 rounded-[1.5rem] md:rounded-[2rem] shadow-[0_0_60px_rgba(20,184,166,0.2)] w-full mb-3 md:mb-4 animate-in slide-in-from-bottom-10 fade-in duration-300 max-h-[56vh] overflow-y-auto">
             <div className="flex items-center justify-between mb-4">
               <div className="flex items-center gap-3">
                 <span className="relative flex h-3 w-3">
@@ -611,7 +682,7 @@ export default function ConductorPanel() {
 
         {/* VIAJE ACTIVO */}
         {(estado === 'viaje_aceptado' || estado === 'viaje_en_curso') && viajeActivo && (
-          <div className="pointer-events-auto bg-black/80 backdrop-blur-2xl border border-emerald-500/30 p-6 rounded-[2rem] shadow-2xl w-full mb-4">
+          <div className="pointer-events-auto bg-black/80 backdrop-blur-2xl border border-emerald-500/30 p-4 md:p-6 rounded-[1.5rem] md:rounded-[2rem] shadow-2xl w-full mb-3 md:mb-4 max-h-[62vh] overflow-y-auto">
             <div className="flex items-center gap-2 mb-4">
               <div className="w-3 h-3 rounded-full bg-emerald-500 animate-pulse" />
               <h3 className="text-lg font-bold text-white">
@@ -619,7 +690,7 @@ export default function ConductorPanel() {
               </h3>
             </div>
 
-            <div className="grid grid-cols-2 gap-3 mb-4">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-4">
               <div className="rounded-xl border border-white/10 bg-white/5 p-3">
                 <p className="text-gray-400 text-[10px] uppercase font-semibold">ETA al pasajero</p>
                 <p className="text-white font-bold text-base">{etaPasajeroMin !== null ? formatTiempoEstimacion(etaPasajeroMin) : 'Calculando...'}</p>
@@ -631,6 +702,13 @@ export default function ConductorPanel() {
                 <p className="text-gray-400 text-xs">{distanciaRutaKm !== null ? formatDistanciaEstimacion(distanciaRutaKm) : 'Sin coordenadas'}</p>
               </div>
             </div>
+
+            {estadoSolicitud === 'esperando_pasajero' && (
+              <div className="mb-4 rounded-2xl border border-cyan-500/40 bg-cyan-500/10 p-3">
+                <p className="text-cyan-200 text-[11px] uppercase tracking-wide font-semibold">Pendiente de pasajero</p>
+                <p className="text-white text-sm mt-1">Ya aceptaste el viaje. Esperando confirmación del pasajero para iniciar.</p>
+              </div>
+            )}
 
             {resumenRuta && rutaActiva.length > 1 && (
               <div className="mb-4 rounded-2xl border border-emerald-500/30 bg-emerald-500/10 p-3">
@@ -665,7 +743,7 @@ export default function ConductorPanel() {
               <span className="text-2xl font-black text-emerald-400">${viajeActivo.precio_estimado}</span>
             </div>
 
-            <div className="grid grid-cols-3 gap-2 mb-4">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 mb-4">
               <button
                 onClick={() => abrirNavegacion('google', estado === 'viaje_aceptado' ? 'origen' : 'destino')}
                 className="py-2.5 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-white text-sm font-semibold transition"
@@ -689,10 +767,12 @@ export default function ConductorPanel() {
             {estado === 'viaje_aceptado' ? (
               <button
                 onClick={iniciarRecorrido}
-                disabled={procesandoViaje}
+                disabled={procesandoViaje || estadoSolicitud === 'esperando_pasajero'}
                 className="w-full py-4 rounded-2xl bg-gradient-to-r from-sky-600 to-cyan-500 hover:from-sky-500 hover:to-cyan-400 text-white font-bold text-lg shadow-[0_0_20px_rgba(14,165,233,0.35)] transition-all disabled:opacity-60"
               >
-                {procesandoViaje ? 'Iniciando...' : 'Iniciar Viaje'}
+                {estadoSolicitud === 'esperando_pasajero'
+                  ? 'Esperando confirmación del pasajero'
+                  : (procesandoViaje ? 'Iniciando...' : 'Iniciar Viaje')}
               </button>
             ) : (
               <button
@@ -708,15 +788,15 @@ export default function ConductorPanel() {
 
         {/* BOTÓN CONECTAR/DESCONECTAR */}
         {!viajeActivo && solicitudesDisponibles.length === 0 && (
-          <div className="pointer-events-auto w-full flex justify-center">
+          <div className="pointer-events-auto w-full flex justify-center pb-1">
             <button
               onClick={toggleOnline}
-              className={`w-44 h-44 rounded-full flex flex-col items-center justify-center font-bold text-lg shadow-2xl transition-all duration-500 ${estado === 'online'
+              className={`w-32 h-32 sm:w-44 sm:h-44 rounded-full flex flex-col items-center justify-center font-bold text-sm sm:text-lg shadow-2xl transition-all duration-500 ${estado === 'online'
                   ? 'bg-gradient-to-b from-red-500 to-red-600 shadow-[0_0_50px_rgba(239,68,68,0.5)] border-4 border-red-400/30 text-white'
                   : 'bg-gradient-to-b from-emerald-500 to-teal-500 shadow-[0_0_50px_rgba(16,185,129,0.3)] border-4 border-emerald-400/30 text-white'
                 }`}
             >
-              <span className="text-3xl mb-1">{estado === 'online' ? '🔴' : '🟢'}</span>
+              <span className="text-2xl sm:text-3xl mb-1">{estado === 'online' ? '🔴' : '🟢'}</span>
               <span>{estado === 'online' ? 'DESCONECTAR' : 'CONECTAR'}</span>
             </button>
           </div>
