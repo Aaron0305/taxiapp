@@ -8,7 +8,7 @@ import type { Conductor } from '@/types/conductor';
 export async function buscarConductorCercano(
   lat: number,
   lng: number,
-  radioMaxKm: number = 10
+  radioMaxKm: number = 30
 ): Promise<Conductor | null> {
   const conductores = await obtenerConductoresDisponibles();
 

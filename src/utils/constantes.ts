@@ -11,7 +11,7 @@ export const RUTAS = {
 } as const;
 
 export const LIMITES = {
-  MAX_RADIO_BUSQUEDA_KM: 10,
+  MAX_RADIO_BUSQUEDA_KM: 30,
   TIMEOUT_SOLICITUD_SEGUNDOS: 30,
   MAX_HISTORIAL_VIAJES: 50,
 } as const;

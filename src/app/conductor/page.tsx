@@ -23,7 +23,7 @@ const MapaLeaflet = dynamic(() => import('@/components/comun/MapaLeaflet'), { ss
 type EstadoConductor = 'offline' | 'online' | 'viaje_aceptado' | 'viaje_en_curso';
 
 const IXTLAHUACA_CENTER: [number, number] = [19.568, -99.768];
-const RADIO_CLIENTES_CERCANOS_KM = 10; // Aumentado de 5 a 10 km para mejor cobertura
+const RADIO_CLIENTES_CERCANOS_KM = 30;
 
 type ProveedorNavegacion = 'google' | 'waze' | 'osm';
 

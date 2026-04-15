@@ -48,7 +48,7 @@ type PuntoRuta = [number, number];
 
 const IXTLAHUACA_CENTER: [number, number] = [19.568, -99.768];
 const HISTORIAL_DESTINOS_MAX = 6;
-const RADIO_ZONA_KM = 10; // Aumentado de 5 a 10 km para mejor cobertura en Ixtlahuaca
+const RADIO_ZONA_KM = 30;
 const ULTIMA_CONEXION_MAX_MS = 15 * 60 * 1000; // Aumentado de 10 a 15 min para tolerar conexiones irregulares
 
 function distanciaKm(aLat: number, aLng: number, bLat: number, bLng: number) {
