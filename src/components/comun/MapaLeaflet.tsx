@@ -21,6 +21,8 @@ interface MapaProps {
   onMapClick?: (lat: number, lng: number) => void;
   userLocation?: [number, number] | null;
   darkMode?: boolean;
+  ruta?: Array<[number, number]>;
+  colorRuta?: string;
 }
 
 // Custom markers using divIcons (no external images needed)
@@ -57,13 +59,21 @@ export default function MapaLeaflet({
   onMapClick,
   userLocation,
   darkMode = true,
+  ruta = [],
+  colorRuta = '#22d3ee',
 }: MapaProps) {
   const mapRef = useRef<L.Map | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const markersRef = useRef<Map<string, L.Marker>>(new Map());
   const userMarkerRef = useRef<L.Marker | null>(null);
+  const routeLineRef = useRef<L.Polyline | null>(null);
   const hasCenteredOnUserRef = useRef(false);
+  const hasCenteredOnRouteRef = useRef(false);
   const [ready, setReady] = useState(false);
+
+  useEffect(() => {
+    hasCenteredOnRouteRef.current = false;
+  }, [colorRuta]);
 
   // Init map
   useEffect(() => {
@@ -178,6 +188,42 @@ export default function MapaLeaflet({
       hasCenteredOnUserRef.current = true;
     }
   }, [userLocation, ready]);
+
+  // Draw route polyline (conductor -> pasajero / pasajero -> destino)
+  useEffect(() => {
+    if (!mapRef.current || !ready) return;
+
+    if (routeLineRef.current) {
+      routeLineRef.current.remove();
+      routeLineRef.current = null;
+    }
+
+    if (!Array.isArray(ruta) || ruta.length < 2) {
+      hasCenteredOnRouteRef.current = false;
+      return;
+    }
+
+    routeLineRef.current = L.polyline(ruta, {
+      color: colorRuta,
+      weight: 6,
+      opacity: 0.9,
+      lineCap: 'round',
+      lineJoin: 'round',
+      dashArray: '10 8',
+    }).addTo(mapRef.current);
+
+    if (!hasCenteredOnRouteRef.current) {
+      const bounds = routeLineRef.current.getBounds();
+      if (bounds.isValid()) {
+        mapRef.current.fitBounds(bounds, {
+          padding: [70, 70],
+          maxZoom: 16,
+          animate: true,
+        });
+        hasCenteredOnRouteRef.current = true;
+      }
+    }
+  }, [ruta, colorRuta, ready]);
 
   return (
     <>

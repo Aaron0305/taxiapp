@@ -25,11 +25,199 @@ type PhotonFeature = {
 const NOMINATIM_BASE_URL = 'https://nominatim.openstreetmap.org';
 const PHOTON_BASE_URL = 'https://photon.komoot.io';
 
+type ResultadoGeocodificacion = {
+  id: string;
+  nombre: string;
+  direccion: string;
+  lat: number;
+  lng: number;
+};
+
+type LugarLocal = ResultadoGeocodificacion & {
+  aliases?: string[];
+};
+
+const STOPWORDS = new Set(['de', 'la', 'el', 'del', 'los', 'las', 'y', 'a', 'en', 'al']);
+
+const LUGARES_IXTLAHUACA: LugarLocal[] = [
+  {
+    id: 'local-cui',
+    nombre: 'CUI Universidad de Ixtlahuaca',
+    direccion: 'CUI, Ixtlahuaca, Estado de Mexico',
+    lat: 19.5665,
+    lng: -99.7617,
+    aliases: ['cui', 'universidad de ixtlahuaca', 'ui', 'universidad ixtlahuaca', 'cui de ixtlahuaca'],
+  },
+  {
+    id: 'local-centro',
+    nombre: 'Centro Ixtlahuaca',
+    direccion: 'Centro, Ixtlahuaca, Estado de Mexico',
+    lat: 19.568,
+    lng: -99.768,
+    aliases: ['zocalo ixtlahuaca', 'centro de ixtlahuaca', 'plaza central ixtlahuaca'],
+  },
+  {
+    id: 'local-terminal',
+    nombre: 'Terminal de Autobuses Ixtlahuaca',
+    direccion: 'Terminal, Ixtlahuaca, Estado de Mexico',
+    lat: 19.57,
+    lng: -99.765,
+    aliases: ['terminal ixtlahuaca', 'autobuses ixtlahuaca', 'terminal camionera'],
+  },
+  {
+    id: 'local-mercado',
+    nombre: 'Mercado Municipal Ixtlahuaca',
+    direccion: 'Mercado, Ixtlahuaca, Estado de Mexico',
+    lat: 19.5665,
+    lng: -99.7672,
+    aliases: ['mercado ixtlahuaca', 'mercado municipal', 'tianguis ixtlahuaca'],
+  },
+  {
+    id: 'local-palacio',
+    nombre: 'Palacio Municipal de Ixtlahuaca',
+    direccion: 'Palacio Municipal, Ixtlahuaca, Estado de Mexico',
+    lat: 19.5677,
+    lng: -99.7677,
+    aliases: ['presidencia ixtlahuaca', 'ayuntamiento ixtlahuaca', 'palacio ixtlahuaca'],
+  },
+  {
+    id: 'local-imss',
+    nombre: 'Clinica IMSS Ixtlahuaca',
+    direccion: 'IMSS, Ixtlahuaca, Estado de Mexico',
+    lat: 19.5712,
+    lng: -99.7639,
+    aliases: ['imss ixtlahuaca', 'clinica ixtlahuaca', 'hospital imss'],
+  },
+  {
+    id: 'local-soriana',
+    nombre: 'Soriana Ixtlahuaca',
+    direccion: 'Soriana, Ixtlahuaca, Estado de Mexico',
+    lat: 19.5639,
+    lng: -99.7631,
+    aliases: ['soriana ixtlahuaca', 'soriana', 'supermercado ixtlahuaca'],
+  },
+  {
+    id: 'local-aurrera',
+    nombre: 'Bodega Aurrera Ixtlahuaca',
+    direccion: 'Bodega Aurrera, Ixtlahuaca, Estado de Mexico',
+    lat: 19.5628,
+    lng: -99.7622,
+    aliases: ['aurrera ixtlahuaca', 'bodega ixtlahuaca', 'aurrera'],
+  },
+  {
+    id: 'local-issste',
+    nombre: 'Clinica ISSSTE Ixtlahuaca',
+    direccion: 'ISSSTE, Ixtlahuaca, Estado de Mexico',
+    lat: 19.5698,
+    lng: -99.7704,
+    aliases: ['issste ixtlahuaca', 'clinica issste', 'hospital issste'],
+  },
+  {
+    id: 'local-toluca',
+    nombre: 'Salida a Toluca Ixtlahuaca',
+    direccion: 'Carretera Toluca-Ixtlahuaca, Ixtlahuaca, Estado de Mexico',
+    lat: 19.5598,
+    lng: -99.7788,
+    aliases: ['toluca ixtlahuaca', 'salida toluca', 'carretera toluca'],
+  },
+];
+
 function direccionPorCoordenadas(lat: number, lng: number) {
   return `Lat ${lat.toFixed(5)}, Lng ${lng.toFixed(5)}`;
 }
 
-function mapearResultados(items: NominatimSearchItem[]) {
+function normalizarTexto(texto: string) {
+  return texto
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function obtenerTokensBusqueda(queryNormalizada: string) {
+  return queryNormalizada
+    .split(' ')
+    .filter((token) => token.length >= 2 && !STOPWORDS.has(token));
+}
+
+function buscarEnLugaresLocales(query: string): ResultadoGeocodificacion[] {
+  const queryNormalizada = normalizarTexto(query);
+  if (!queryNormalizada) return [];
+
+  const tokens = obtenerTokensBusqueda(queryNormalizada);
+
+  const candidatos = LUGARES_IXTLAHUACA.map((lugar) => {
+    const corpus = normalizarTexto([
+      lugar.nombre,
+      lugar.direccion,
+      ...(lugar.aliases || []),
+    ].join(' '));
+
+    const contieneConsultaCompleta = corpus.includes(queryNormalizada);
+    const palabrasCorpus = corpus.split(' ');
+    let tokensCoincidentes = 0;
+    let puntaje = contieneConsultaCompleta ? 120 : 0;
+
+    for (const token of tokens) {
+      if (corpus.includes(token)) {
+        tokensCoincidentes += 1;
+        puntaje += token.length >= 5 ? 24 : 14;
+        continue;
+      }
+
+      const parecidoPorPrefijo = palabrasCorpus.some((palabra) =>
+        palabra.startsWith(token) || token.startsWith(palabra)
+      );
+
+      if (parecidoPorPrefijo) {
+        tokensCoincidentes += 1;
+        puntaje += 7;
+      }
+    }
+
+    return {
+      lugar,
+      puntaje,
+      contieneConsultaCompleta,
+      tokensCoincidentes,
+      totalTokens: tokens.length,
+    };
+  });
+
+  const filtrados = candidatos
+    .filter((item) => {
+      if (item.contieneConsultaCompleta) return true;
+      if (item.totalTokens === 0) return false;
+      if (item.totalTokens === 1) return item.tokensCoincidentes >= 1;
+      return item.tokensCoincidentes >= 2;
+    })
+    .sort((a, b) => b.puntaje - a.puntaje)
+    .slice(0, 8)
+    .map(({ lugar }) => ({
+      id: lugar.id,
+      nombre: lugar.nombre,
+      direccion: lugar.direccion,
+      lat: lugar.lat,
+      lng: lugar.lng,
+    }));
+
+  return filtrados;
+}
+
+function deduplicarResultados(resultados: ResultadoGeocodificacion[]) {
+  const vistos = new Set<string>();
+
+  return resultados.filter((item) => {
+    const key = `${normalizarTexto(item.nombre)}-${item.lat.toFixed(4)}-${item.lng.toFixed(4)}`;
+    if (vistos.has(key)) return false;
+    vistos.add(key);
+    return true;
+  });
+}
+
+function mapearResultados(items: NominatimSearchItem[]): ResultadoGeocodificacion[] {
   return items.map((item) => ({
     id: String(item.place_id),
     nombre: item.display_name.split(',')[0] || item.display_name,
@@ -61,21 +249,26 @@ async function fetchJsonConTimeout(url: string, timeoutMs = 7000) {
 
 async function buscarConNominatim(query: string) {
   const consultas = [
-    `${query}, Ixtlahuaca, Estado de Mexico, Mexico`,
     query,
+    `${query}, Ixtlahuaca, Estado de Mexico, Mexico`,
   ];
 
   const acumulados: NominatimSearchItem[] = [];
 
-  for (const q of consultas) {
+  for (const [index, q] of consultas.entries()) {
+    const aplicarSesgoLocal = index > 0;
     const params = new URLSearchParams({
       q,
       format: 'json',
       limit: '8',
       addressdetails: '1',
-      viewbox: '-99.9,19.7,-99.6,19.4',
+      countrycodes: 'mx',
       bounded: '0',
     });
+
+    if (aplicarSesgoLocal) {
+      params.set('viewbox', '-99.9,19.7,-99.6,19.4');
+    }
 
     const response = await fetchJsonConTimeout(`${NOMINATIM_BASE_URL}/search?${params}`);
     if (!response.ok) {
@@ -85,10 +278,6 @@ async function buscarConNominatim(query: string) {
     const data = (await response.json()) as NominatimSearchItem[];
     if (Array.isArray(data)) {
       acumulados.push(...data);
-    }
-
-    if (acumulados.length >= 8) {
-      break;
     }
   }
 
@@ -103,7 +292,7 @@ async function buscarConNominatim(query: string) {
   return mapearResultados(unicos.slice(0, 8));
 }
 
-async function buscarConPhoton(query: string) {
+async function buscarConPhoton(query: string): Promise<ResultadoGeocodificacion[]> {
   const params = new URLSearchParams({
     q: query,
     lang: 'es',
@@ -141,7 +330,7 @@ async function buscarConPhoton(query: string) {
         lng,
       };
     })
-    .filter((item): item is { id: string; nombre: string; direccion: string; lat: number; lng: number } => Boolean(item));
+    .filter((item): item is ResultadoGeocodificacion => Boolean(item));
 }
 
 async function resolverDireccionReverse(lat: number, lng: number) {
@@ -186,23 +375,16 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ resultados: [] });
     }
 
+    const resultadosLocales = buscarEnLugaresLocales(q);
     const resultadosNominatim = await buscarConNominatim(q);
-    if (resultadosNominatim.length > 0) {
-      return NextResponse.json({ resultados: resultadosNominatim });
-    }
-
     const resultadosPhoton = await buscarConPhoton(q);
-    if (resultadosPhoton.length > 0) {
-      return NextResponse.json({ resultados: resultadosPhoton });
-    }
 
-    const fallbackLocal = [
-      { id: 'fallback-centro', nombre: 'Centro Ixtlahuaca', direccion: 'Centro, Ixtlahuaca, Estado de México', lat: 19.568, lng: -99.768 },
-      { id: 'fallback-terminal', nombre: 'Terminal de Autobuses Ixtlahuaca', direccion: 'Terminal, Ixtlahuaca, Estado de México', lat: 19.57, lng: -99.765 },
-      { id: 'fallback-mercado', nombre: 'Mercado Ixtlahuaca', direccion: 'Mercado, Ixtlahuaca, Estado de México', lat: 19.5665, lng: -99.7672 },
-    ].filter((item) => item.nombre.toLowerCase().includes(q.toLowerCase()) || item.direccion.toLowerCase().includes(q.toLowerCase()));
+    const resultados = deduplicarResultados([
+      ...resultadosLocales,
+      ...resultadosNominatim,
+      ...resultadosPhoton,
+    ]).slice(0, 8);
 
-    const resultados = fallbackLocal;
     return NextResponse.json({ resultados });
   } catch {
     return NextResponse.json({ resultados: [] }, { status: 200 });

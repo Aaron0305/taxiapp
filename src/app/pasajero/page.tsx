@@ -13,6 +13,7 @@ import {
   type ViajeDB,
 } from '@/services/api/viajeService';
 import { buscarDireccion, obtenerDireccion, type ResultadoBusqueda } from '@/services/mapas/geocodificacion';
+import { obtenerRutaConductor } from '@/services/mapas/ruta';
 import { suscribirseAUbicacionConductor } from '@/services/socket/websocketService';
 import { obtenerSesionSegura, obtenerUsuarioSeguro } from '@/services/auth/sessionSafe';
 
@@ -42,6 +43,8 @@ interface ConductorZona {
   lng: number;
   distanciaConductorKm: number;
 }
+
+type PuntoRuta = [number, number];
 
 const IXTLAHUACA_CENTER: [number, number] = [19.568, -99.768];
 const HISTORIAL_DESTINOS_MAX = 6;
@@ -152,6 +155,8 @@ export default function PasajeroPanel() {
   const [actualizandoZona, setActualizandoZona] = useState(false);
   const [cancelandoViaje, setCancelandoViaje] = useState(false);
   const [historialDestinos, setHistorialDestinos] = useState<ResultadoBusqueda[]>([]);
+  const [rutaActiva, setRutaActiva] = useState<PuntoRuta[]>([]);
+  const [resumenRuta, setResumenRuta] = useState<{ distanciaKm: number; duracionMin: number } | null>(null);
 
   // Map markers
   const [marcadores, setMarcadores] = useState<Array<{ id: string; lat: number; lng: number; tipo: 'usuario' | 'destino' | 'conductor'; label?: string }>>([]);
@@ -161,6 +166,61 @@ export default function PasajeroPanel() {
   const refreshConductoresTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
   const keyHistorialDestinos = useCallback((uid: string) => `ixtlappp:historial-destinos:${uid}`, []);
+
+  const calcularRutaSegunEstado = useCallback(async (
+    viaje: ViajeDB,
+    conductorPosicion: PuntoRuta | null,
+    pasajeroPosicion: PuntoRuta | null
+  ) => {
+    const origenViaje = viaje.origen_lat != null && viaje.origen_lng != null
+      ? [Number(viaje.origen_lat), Number(viaje.origen_lng)] as PuntoRuta
+      : null;
+    const destinoViaje = viaje.destino_lat != null && viaje.destino_lng != null
+      ? [Number(viaje.destino_lat), Number(viaje.destino_lng)] as PuntoRuta
+      : null;
+
+    if (viaje.estado === 'aceptado') {
+      if (!conductorPosicion || !origenViaje) {
+        setRutaActiva([]);
+        setResumenRuta(null);
+        return;
+      }
+
+      const ruta = await obtenerRutaConductor(conductorPosicion, origenViaje);
+      if (!ruta) {
+        setRutaActiva([conductorPosicion, origenViaje]);
+        setResumenRuta(null);
+        return;
+      }
+
+      setRutaActiva(ruta.puntos);
+      setResumenRuta({ distanciaKm: ruta.distanciaKm, duracionMin: ruta.duracionMin });
+      return;
+    }
+
+    if (viaje.estado === 'en_curso') {
+      const origenRecorrido = conductorPosicion || pasajeroPosicion || origenViaje;
+      if (!origenRecorrido || !destinoViaje) {
+        setRutaActiva([]);
+        setResumenRuta(null);
+        return;
+      }
+
+      const ruta = await obtenerRutaConductor(origenRecorrido, destinoViaje);
+      if (!ruta) {
+        setRutaActiva([origenRecorrido, destinoViaje]);
+        setResumenRuta(null);
+        return;
+      }
+
+      setRutaActiva(ruta.puntos);
+      setResumenRuta({ distanciaKm: ruta.distanciaKm, duracionMin: ruta.duracionMin });
+      return;
+    }
+
+    setRutaActiva([]);
+    setResumenRuta(null);
+  }, []);
 
   const guardarDestinoEnHistorial = useCallback((destino: ResultadoBusqueda) => {
     if (!userId) return;
@@ -491,6 +551,43 @@ export default function PasajeroPanel() {
     };
   }, [viajeActivo?.id, viajeActivo?.conductor_id, viajeActivo?.estado]);
 
+  useEffect(() => {
+    if (!viajeActivo || (paso !== 'viaje_activo' && paso !== 'esperando')) {
+      setRutaActiva([]);
+      setResumenRuta(null);
+      return;
+    }
+
+    let cancelado = false;
+
+    const ejecutar = async () => {
+      const pasajeroPosicion = userLocation ? [userLocation[0], userLocation[1]] as PuntoRuta : null;
+      const conductorPosicion = conductorLocation ? [conductorLocation[0], conductorLocation[1]] as PuntoRuta : null;
+
+      await calcularRutaSegunEstado(viajeActivo, conductorPosicion, pasajeroPosicion);
+      if (cancelado) return;
+    };
+
+    void ejecutar();
+
+    return () => {
+      cancelado = true;
+    };
+  }, [
+    viajeActivo?.id,
+    viajeActivo?.estado,
+    viajeActivo?.origen_lat,
+    viajeActivo?.origen_lng,
+    viajeActivo?.destino_lat,
+    viajeActivo?.destino_lng,
+    conductorLocation?.[0],
+    conductorLocation?.[1],
+    userLocation?.[0],
+    userLocation?.[1],
+    paso,
+    calcularRutaSegunEstado,
+  ]);
+
   // === Buscar destinos con debounce ===
   useEffect(() => {
     if (searchTimeoutRef.current) clearTimeout(searchTimeoutRef.current);
@@ -599,7 +696,26 @@ export default function PasajeroPanel() {
   // === Update map markers ===
   useEffect(() => {
     const marks: typeof marcadores = [];
-    if (destinoSeleccionado) {
+
+    if (viajeActivo?.origen_lat != null && viajeActivo?.origen_lng != null) {
+      marks.push({
+        id: 'origen-viaje',
+        lat: Number(viajeActivo.origen_lat),
+        lng: Number(viajeActivo.origen_lng),
+        tipo: 'usuario',
+        label: viajeActivo.origen_direccion || 'Punto de recogida',
+      });
+    }
+
+    if (viajeActivo?.destino_lat != null && viajeActivo?.destino_lng != null) {
+      marks.push({
+        id: 'destino-viaje',
+        lat: Number(viajeActivo.destino_lat),
+        lng: Number(viajeActivo.destino_lng),
+        tipo: 'destino',
+        label: viajeActivo.destino_direccion || 'Destino',
+      });
+    } else if (destinoSeleccionado) {
       marks.push({
         id: 'destino',
         lat: destinoSeleccionado.lat,
@@ -616,7 +732,7 @@ export default function PasajeroPanel() {
         tipo: 'conductor',
         label: 'Tu Taxi en camino',
       });
-    } else {
+    } else if (!viajeActivo) {
       conductoresZonaLista.forEach((conductor, idx) => {
         marks.push({
           id: `conductor-zona-${conductor.id}`,
@@ -734,6 +850,8 @@ export default function PasajeroPanel() {
           darkMode={true}
           userLocation={userLocation}
           marcadores={marcadores}
+          ruta={rutaActiva}
+          colorRuta={paso === 'viaje_activo' ? '#34d399' : '#38bdf8'}
           onMapClick={manejarClickMapa}
         />
       </div>
@@ -1013,6 +1131,16 @@ export default function PasajeroPanel() {
             <p className="text-gray-400 text-sm mb-2">Tu solicitud está visible para los conductores cercanos</p>
             <p className="text-blue-400 text-sm font-semibold mb-6">{destinoSeleccionado?.nombre || viajeActivo?.destino_direccion}</p>
 
+            {resumenRuta && rutaActiva.length > 1 && (
+              <div className="w-full max-w-sm mb-6 rounded-2xl border border-blue-500/30 bg-blue-500/10 p-3 text-left">
+                <p className="text-blue-200 text-[11px] uppercase tracking-wide font-semibold">Ruta estimada conductor → recogida</p>
+                <p className="text-white text-sm font-semibold mt-1">
+                  {resumenRuta.distanciaKm.toFixed(1)} km · {resumenRuta.duracionMin} min aprox.
+                </p>
+                <p className="text-blue-200/90 text-xs mt-1">La ruta ya se muestra en el mapa en tiempo real.</p>
+              </div>
+            )}
+
             <button
               onClick={cancelar}
               className="px-8 py-3 rounded-full bg-white/5 hover:bg-red-500/10 border border-white/10 hover:border-red-500/50 text-gray-300 hover:text-red-400 transition-all font-medium"
@@ -1040,6 +1168,14 @@ export default function PasajeroPanel() {
                   <p className="text-white font-medium">{viajeActivo.destino_direccion}</p>
                 </div>
               </div>
+              {resumenRuta && rutaActiva.length > 1 && (
+                <div className="mb-3 rounded-xl border border-emerald-500/30 bg-emerald-500/10 p-3">
+                  <p className="text-emerald-200 text-[11px] uppercase tracking-wide font-semibold">Ruta activa del viaje</p>
+                  <p className="text-white text-sm font-semibold mt-1">
+                    {resumenRuta.distanciaKm.toFixed(1)} km · {resumenRuta.duracionMin} min aprox.
+                  </p>
+                </div>
+              )}
               <div className="flex justify-between">
                 <span className="text-gray-400 text-sm">Precio estimado</span>
                 <span className="text-white font-bold text-lg">${viajeActivo.precio_estimado}</span>

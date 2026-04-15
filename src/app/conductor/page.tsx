@@ -15,6 +15,7 @@ import {
   type ViajeDB,
 } from '@/services/api/viajeService';
 import { obtenerSesionSegura, obtenerUsuarioSeguro } from '@/services/auth/sessionSafe';
+import { obtenerRutaConductor } from '@/services/mapas/ruta';
 import IndicadorGPS from '@/components/conductor/IndicadorGPS';
 
 const MapaLeaflet = dynamic(() => import('@/components/comun/MapaLeaflet'), { ssr: false });
@@ -107,6 +108,8 @@ export default function ConductorPanel() {
   const [viajesHoy, setViajesHoy] = useState(0);
   const [aceptandoViajeId, setAceptandoViajeId] = useState<string | null>(null);
   const [procesandoViaje, setProcesandoViaje] = useState(false);
+  const [rutaActiva, setRutaActiva] = useState<Array<[number, number]>>([]);
+  const [resumenRuta, setResumenRuta] = useState<{ distanciaKm: number; duracionMin: number } | null>(null);
 
   // Map markers
   const [marcadores, setMarcadores] = useState<Array<{ id: string; lat: number; lng: number; tipo: 'usuario' | 'destino' | 'conductor'; label?: string }>>([]);
@@ -253,6 +256,62 @@ export default function ConductorPanel() {
     .filter((item) => item.distancia <= RADIO_CLIENTES_CERCANOS_KM)
     .sort((a, b) => a.distancia - b.distancia);
 
+  const calcularRutaViaje = useCallback(async () => {
+    if (!viajeActivo) {
+      setRutaActiva([]);
+      setResumenRuta(null);
+      return;
+    }
+
+    const origenViaje = viajeActivo.origen_lat != null && viajeActivo.origen_lng != null
+      ? [Number(viajeActivo.origen_lat), Number(viajeActivo.origen_lng)] as [number, number]
+      : null;
+    const destinoViaje = viajeActivo.destino_lat != null && viajeActivo.destino_lng != null
+      ? [Number(viajeActivo.destino_lat), Number(viajeActivo.destino_lng)] as [number, number]
+      : null;
+
+    if (estado === 'viaje_aceptado') {
+      if (!userLocation || !origenViaje) {
+        setRutaActiva([]);
+        setResumenRuta(null);
+        return;
+      }
+
+      const ruta = await obtenerRutaConductor(userLocation, origenViaje);
+      if (!ruta) {
+        setRutaActiva([userLocation, origenViaje]);
+        setResumenRuta(null);
+        return;
+      }
+
+      setRutaActiva(ruta.puntos);
+      setResumenRuta({ distanciaKm: ruta.distanciaKm, duracionMin: ruta.duracionMin });
+      return;
+    }
+
+    if (estado === 'viaje_en_curso') {
+      if (!userLocation || !destinoViaje) {
+        setRutaActiva([]);
+        setResumenRuta(null);
+        return;
+      }
+
+      const ruta = await obtenerRutaConductor(userLocation, destinoViaje);
+      if (!ruta) {
+        setRutaActiva([userLocation, destinoViaje]);
+        setResumenRuta(null);
+        return;
+      }
+
+      setRutaActiva(ruta.puntos);
+      setResumenRuta({ distanciaKm: ruta.distanciaKm, duracionMin: ruta.duracionMin });
+      return;
+    }
+
+    setRutaActiva([]);
+    setResumenRuta(null);
+  }, [viajeActivo, estado, userLocation]);
+
   // === Update markers ===
   useEffect(() => {
     const marks: typeof marcadores = [];
@@ -290,6 +349,32 @@ export default function ConductorPanel() {
     });
     setMarcadores(marks);
   }, [viajeActivo, solicitudesCercanas]);
+
+  useEffect(() => {
+    let cancelado = false;
+
+    const ejecutar = async () => {
+      await calcularRutaViaje();
+      if (cancelado) return;
+    };
+
+    void ejecutar();
+
+    return () => {
+      cancelado = true;
+    };
+  }, [
+    calcularRutaViaje,
+    estado,
+    viajeActivo?.id,
+    viajeActivo?.estado,
+    viajeActivo?.origen_lat,
+    viajeActivo?.origen_lng,
+    viajeActivo?.destino_lat,
+    viajeActivo?.destino_lng,
+    userLocation?.[0],
+    userLocation?.[1],
+  ]);
 
   // === Actions ===
   const toggleOnline = useCallback(async () => {
@@ -394,6 +479,8 @@ export default function ConductorPanel() {
           darkMode={true}
           userLocation={estado !== 'offline' ? userLocation : null}
           marcadores={marcadores}
+          ruta={rutaActiva}
+          colorRuta={estado === 'viaje_en_curso' ? '#34d399' : '#38bdf8'}
         />
       </div>
 
@@ -544,6 +631,17 @@ export default function ConductorPanel() {
                 <p className="text-gray-400 text-xs">{distanciaRutaKm !== null ? formatDistanciaEstimacion(distanciaRutaKm) : 'Sin coordenadas'}</p>
               </div>
             </div>
+
+            {resumenRuta && rutaActiva.length > 1 && (
+              <div className="mb-4 rounded-2xl border border-emerald-500/30 bg-emerald-500/10 p-3">
+                <p className="text-emerald-200 text-[11px] uppercase tracking-wide font-semibold">
+                  {estado === 'viaje_aceptado' ? 'Ruta conductor -> pasajero' : 'Ruta conductor -> destino'}
+                </p>
+                <p className="text-white text-sm font-semibold mt-1">
+                  {resumenRuta.distanciaKm.toFixed(1)} km · {resumenRuta.duracionMin} min aprox.
+                </p>
+              </div>
+            )}
 
             <div className="bg-white/5 border border-white/10 rounded-2xl p-4 mb-4">
               <div className="flex items-start gap-3 mb-3">
