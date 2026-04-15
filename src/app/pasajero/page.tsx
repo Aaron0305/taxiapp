@@ -387,7 +387,11 @@ export default function PasajeroPanel() {
             if (viaje.conductor_id) setPaso('confirmar_conductor');
             else setPaso('esperando');
           }
-          else if (viaje.estado === 'aceptado' || viaje.estado === 'en_curso') setPaso('viaje_activo');
+          else if (viaje.estado === 'aceptado') {
+            if (viaje.iniciado_en) setPaso('viaje_activo');
+            else setPaso('confirmar_conductor');
+          }
+          else if (viaje.estado === 'en_curso') setPaso('viaje_activo');
         } else {
           // Evita arrastrar destino visual de una sesión previa cuando no hay viaje activo.
           setDestinoSeleccionado(null);
@@ -534,8 +538,12 @@ export default function PasajeroPanel() {
         if (viajeActualizado.conductor_id) setPaso('confirmar_conductor');
         else setPaso('esperando');
       }
-      if (viajeActualizado.estado === 'aceptado') setPaso('viaje_activo');
-      else if (viajeActualizado.estado === 'completado') {
+      if (viajeActualizado.estado === 'aceptado') {
+        if (viajeActualizado.iniciado_en) setPaso('viaje_activo');
+        else setPaso('confirmar_conductor');
+      }
+      if (viajeActualizado.estado === 'en_curso') setPaso('viaje_activo');
+      if (viajeActualizado.estado === 'completado') {
         setPaso('completado');
         setTimeout(() => {
           setPaso('inicio');
@@ -545,7 +553,8 @@ export default function PasajeroPanel() {
           setResultados([]);
           setConductorLocation(null);
         }, 5000);
-      } else if (viajeActualizado.estado === 'cancelado') {
+      }
+      if (viajeActualizado.estado === 'cancelado') {
         setPaso('inicio');
         setViajeActivo(null);
         setDestinoSeleccionado(null);

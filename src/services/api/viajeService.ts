@@ -80,10 +80,12 @@ export async function confirmarConductorPorPasajero(viajeId: string, pasajeroId:
     .from('viajes')
     .update({
       estado: 'aceptado',
+      // Marca de confirmacion del pasajero (luego se sobreescribe al iniciar el viaje real)
+      iniciado_en: new Date().toISOString(),
     })
     .eq('id', viajeId)
     .eq('pasajero_id', pasajeroId)
-    .eq('estado', 'solicitado')
+    .in('estado', ['solicitado', 'aceptado'])
     .not('conductor_id', 'is', null)
     .select()
     .single();
@@ -97,10 +99,12 @@ export async function rechazarConductorPorPasajero(viajeId: string, pasajeroId: 
     .from('viajes')
     .update({
       conductor_id: null,
+      estado: 'solicitado',
+      iniciado_en: null,
     })
     .eq('id', viajeId)
     .eq('pasajero_id', pasajeroId)
-    .eq('estado', 'solicitado')
+    .in('estado', ['solicitado', 'aceptado'])
     .select()
     .single();
 
@@ -114,6 +118,7 @@ export async function iniciarViaje(viajeId: string) {
     .update({ estado: 'en_curso', iniciado_en: new Date().toISOString() })
     .eq('id', viajeId)
     .eq('estado', 'aceptado')
+    .not('iniciado_en', 'is', null)
     .select()
     .single();
 

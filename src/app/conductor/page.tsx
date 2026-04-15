@@ -147,7 +147,7 @@ export default function ConductorPanel() {
             setEstadoSolicitud(null);
           } else if (viaje.estado === 'aceptado') {
             setEstado('viaje_aceptado');
-            setEstadoSolicitud(null);
+            setEstadoSolicitud(viaje.iniciado_en ? null : 'esperando_pasajero');
           } else if (viaje.estado === 'solicitado' && viaje.conductor_id) {
             setEstado('viaje_aceptado');
             setEstadoSolicitud('esperando_pasajero');
@@ -177,7 +177,7 @@ export default function ConductorPanel() {
                 setEstadoSolicitud('esperando_pasajero');
               } else if (nuevoViaje.estado === 'aceptado') {
                 setEstado('viaje_aceptado');
-                setEstadoSolicitud(null);
+                setEstadoSolicitud(nuevoViaje.iniciado_en ? null : 'esperando_pasajero');
               } else if (nuevoViaje.estado === 'en_curso') {
                 setEstado('viaje_en_curso');
                 setEstadoSolicitud(null);
@@ -338,7 +338,8 @@ export default function ConductorPanel() {
       return;
     }
 
-    if (viajeActivo.estado === 'solicitado' && viajeActivo.conductor_id) {
+    if ((viajeActivo.estado === 'solicitado' && viajeActivo.conductor_id)
+      || (viajeActivo.estado === 'aceptado' && !viajeActivo.iniciado_en)) {
       if (!userLocation || !origenViaje) {
         setRutaActiva([]);
         setResumenRuta(null);
