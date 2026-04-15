@@ -45,8 +45,8 @@ interface ConductorZona {
 
 const IXTLAHUACA_CENTER: [number, number] = [19.568, -99.768];
 const HISTORIAL_DESTINOS_MAX = 6;
-const RADIO_ZONA_KM = 5;
-const ULTIMA_CONEXION_MAX_MS = 10 * 60 * 1000;
+const RADIO_ZONA_KM = 10; // Aumentado de 5 a 10 km para mejor cobertura en Ixtlahuaca
+const ULTIMA_CONEXION_MAX_MS = 15 * 60 * 1000; // Aumentado de 10 a 15 min para tolerar conexiones irregulares
 
 function distanciaKm(aLat: number, aLng: number, bLat: number, bLng: number) {
   const R = 6371;
@@ -176,16 +176,20 @@ export default function PasajeroPanel() {
   const calcularConductoresEnZona = useCallback((conductores: ConductorCercanoRaw[], origen: [number, number]) => {
     const ahora = Date.now();
 
-    return conductores
+    const mapedConductores = conductores
       .map((c) => {
         const coords = extraerCoordsConductor(c.ubicacion_actual);
-        if (!coords) return null;
+        if (!coords) {
+          console.warn(`[FILTER] Conductor ${c.id}: ubicacion_actual no parseable`, c.ubicacion_actual);
+          return null;
+        }
 
         const actualizadoHaceMs = c.ultima_conexion
           ? ahora - new Date(c.ultima_conexion).getTime()
-          : 0;
+          : Infinity;
 
         const distanciaConductorKm = distanciaKm(coords[0], coords[1], origen[0], origen[1]);
+        
         return {
           id: c.id,
           lat: coords[0],
@@ -194,34 +198,81 @@ export default function PasajeroPanel() {
           actualizadoHaceMs,
         };
       })
-      .filter((item): item is NonNullable<typeof item> => Boolean(item))
-      .filter((item) => item.actualizadoHaceMs <= ULTIMA_CONEXION_MAX_MS)
-      .filter((item) => item.distanciaConductorKm <= RADIO_ZONA_KM)
+      .filter((item): item is NonNullable<typeof item> => {
+        if (!item) return false;
+        return true;
+      });
+
+    console.log(`[FILTER] After parsing coords: ${mapedConductores.length} conductores`);
+
+    const afterTimestampFilter = mapedConductores
+      .filter((item) => {
+        if (item.actualizadoHaceMs > ULTIMA_CONEXION_MAX_MS) {
+          console.warn(`[FILTER] Conductor ${item.id}: ultima_conexion vieja (${(item.actualizadoHaceMs / 1000 / 60).toFixed(1)} min atrás)`);
+          return false;
+        }
+        return true;
+      });
+
+    console.log(`[FILTER] After timestamp filter: ${afterTimestampFilter.length} conductores`);
+
+    const afterDistanceFilter = afterTimestampFilter
+      .filter((item) => {
+        if (item.distanciaConductorKm > RADIO_ZONA_KM) {
+          console.warn(`[FILTER] Conductor ${item.id}: distancia muy lejana (${item.distanciaConductorKm.toFixed(2)} km)`);
+          return false;
+        }
+        return true;
+      })
       .sort((a, b) => a.distanciaConductorKm - b.distanciaConductorKm);
+
+    console.log(`[FILTER] After distance filter: ${afterDistanceFilter.length} conductores`);
+
+    return afterDistanceFilter;
   }, []);
 
-  const refrescarConductoresZona = useCallback(async (location: [number, number] | null, silent = false) => {
-    if (!location) return;
-    if (!silent) setActualizandoZona(true);
+   const refrescarConductoresZona = useCallback(async (location: [number, number] | null, silent = false) => {
+     if (!location) return;
+     if (!silent) setActualizandoZona(true);
 
-    const { data, error: conductoresError } = await supabase
-      .from('conductores')
-      .select('id, ubicacion_actual, ultima_conexion, esta_disponible')
-      .eq('esta_disponible', true)
-      .not('ubicacion_actual', 'is', null)
-      .limit(120);
+     const { data, error: conductoresError } = await supabase
+       .from('conductores')
+       .select('id, ubicacion_actual, ultima_conexion, esta_disponible')
+       .eq('esta_disponible', true)
+       .not('ubicacion_actual', 'is', null)
+       .limit(120);
 
-    if (conductoresError || !Array.isArray(data)) {
-      setConductoresZonaRealtime(0);
-      if (!silent) setActualizandoZona(false);
-      return;
-    }
+     if (conductoresError || !Array.isArray(data)) {
+       console.error('Error fetching conductores:', conductoresError);
+       setConductoresZonaRealtime(0);
+       if (!silent) setActualizandoZona(false);
+       return;
+     }
 
-    const lista = calcularConductoresEnZona(data as ConductorCercanoRaw[], location);
-    setConductoresZonaLista(lista);
-    setConductoresZonaRealtime(lista.length);
-    if (!silent) setActualizandoZona(false);
-  }, [calcularConductoresEnZona]);
+     console.log(`[DEBUG] Total conductores fetched: ${data.length}`);
+     data.forEach((c: any, idx: number) => {
+       console.log(`[CONDUCTOR ${idx}]`, {
+         id: c.id,
+         esta_disponible: c.esta_disponible,
+         ultima_conexion: c.ultima_conexion,
+         ubicacion_actual: c.ubicacion_actual ? 'PRESENT' : 'NULL'
+       });
+     });
+
+     const lista = calcularConductoresEnZona(data as ConductorCercanoRaw[], location);
+     console.log(`[DEBUG] Conductores after filtering: ${lista.length}`);
+     lista.forEach((c, idx) => {
+       console.log(`[AFTER FILTER ${idx}]`, {
+         id: c.id,
+         distancia_km: c.distanciaConductorKm.toFixed(2),
+         atraso_ms: c.actualizadoHaceMs
+       });
+     });
+     
+     setConductoresZonaLista(lista);
+     setConductoresZonaRealtime(lista.length);
+     if (!silent) setActualizandoZona(false);
+   }, [calcularConductoresEnZona]);
 
   const programarRefreshConductoresZona = useCallback((location: [number, number] | null) => {
     if (!location) return;

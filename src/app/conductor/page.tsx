@@ -22,7 +22,7 @@ const MapaLeaflet = dynamic(() => import('@/components/comun/MapaLeaflet'), { ss
 type EstadoConductor = 'offline' | 'online' | 'viaje_aceptado' | 'viaje_en_curso';
 
 const IXTLAHUACA_CENTER: [number, number] = [19.568, -99.768];
-const RADIO_CLIENTES_CERCANOS_KM = 5;
+const RADIO_CLIENTES_CERCANOS_KM = 10; // Aumentado de 5 a 10 km para mejor cobertura
 
 type ProveedorNavegacion = 'google' | 'waze' | 'osm';
 
@@ -174,17 +174,23 @@ export default function ConductorPanel() {
     return () => navigator.geolocation.clearWatch(watchId);
   }, []);
 
-  // === Guardar ubicación en BD cuando está online ===
+  // === Guardar ubicación en BD siempre (online u offline), así pasajero ve conductor ===
   useEffect(() => {
-    if (estado === 'offline' || !userLocation || !userId) return;
+    if (!userLocation || !userId) return;
 
     const actualizarUbicacion = async () => {
       const point = `POINT(${userLocation[1]} ${userLocation[0]})`;
-      await supabase.from('conductores').update({
+      console.log(`[CONDUCTOR] Updating location: ${userLocation[0].toFixed(4)}, ${userLocation[1].toFixed(4)}`);
+      
+      const { error } = await supabase.from('conductores').update({
         esta_disponible: estado === 'online',
         ultima_conexion: new Date().toISOString(),
         ubicacion_actual: point,
       }).eq('id', userId);
+      
+      if (error) {
+        console.error('[CONDUCTOR] Error updating location:', error);
+      }
     };
 
     // Push inmediato para evitar ventana de 5s con datos stale en pasajero.
@@ -195,7 +201,7 @@ export default function ConductorPanel() {
     }, 5000); // Intervalo de 5 segundos
 
     return () => clearInterval(interval);
-  }, [estado, userLocation, userId]);
+  }, [userLocation, userId, estado]);
 
   // === Cargar solicitudes existentes cuando está online ===
   useEffect(() => {
