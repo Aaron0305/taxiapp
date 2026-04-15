@@ -277,13 +277,14 @@ export default function ConductorPanel() {
       }
     }
     solicitudesCercanas.forEach((solicitud) => {
-      if (solicitud.origen_lat && solicitud.origen_lng) {
+      const viaje = solicitud.solicitud as ViajeDB;
+      if (viaje.origen_lat && viaje.origen_lng) {
         marks.push({
-          id: `solicitud-${solicitud.id}`,
-          lat: Number(solicitud.origen_lat),
-          lng: Number(solicitud.origen_lng),
+          id: `solicitud-${viaje.id}`,
+          lat: Number(viaje.origen_lat),
+          lng: Number(viaje.origen_lng),
           tipo: 'usuario',
-          label: solicitud.origen_direccion || 'Pasajero',
+          label: viaje.origen_direccion || 'Pasajero',
         });
       }
     });
