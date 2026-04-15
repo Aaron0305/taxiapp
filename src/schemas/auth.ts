@@ -30,7 +30,7 @@ export const registroSchema = z.object({
     .min(1, 'Debes confirmar tu contraseña'),
 
   aceptaTerminos: z.literal(true, {
-    error_map: () => ({ message: 'Debes aceptar los términos y condiciones' }),
+    errorMap: () => ({ message: 'Debes aceptar los términos y condiciones' }),
   }),
   
   rol: z.enum(['pasajero', 'conductor'], {
